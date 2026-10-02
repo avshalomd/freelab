@@ -1,0 +1,2 @@
+{"t": "2026-10-01T09:18:00+00:00", "backend": "modal", "run": "smoke-modal-20261001", "usd": 0.05, "kind": "estimate", "note": "connection check, L4, about 2 min with the image build"}
+{"t": "2026-10-01T09:22:00+00:00", "backend": "modal", "run": "smoke-modal-20261001", "usd": 0.04, "kind": "actual", "note": "free credit"}

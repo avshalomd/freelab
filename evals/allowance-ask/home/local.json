@@ -1,0 +1,14 @@
+{
+  "probe": {
+    "os": "macos",
+    "cpu": "Apple M2",
+    "cpu_threads": 8,
+    "ram_gb": 16.0,
+    "gpu": {"kind": "apple", "name": "Apple M2", "mem_gb": 16.0, "unified": true}
+  },
+  "day": {"ram_gb": 4.0, "gpu_mem_gb": 0.0, "cpu_threads": 4},
+  "night": {"ram_gb": 4.0, "gpu_mem_gb": 0.0, "cpu_threads": 4},
+  "night_window": {"start": "23:00", "end": "07:00"},
+  "idle_check": false,
+  "updated": "2026-09-28T09:00:00+00:00"
+}

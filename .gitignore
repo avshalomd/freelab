@@ -1,0 +1,8 @@
+.superpowers/
+__pycache__/
+.venv/
+/lab/
+*.egg-info/
+.pytest_cache/
+results/
+uv.lock

@@ -1,0 +1,6 @@
+{
+  "name": "freelab",
+  "owner": { "name": "Avshalom Dayan", "url": "https://github.com/avshalomd" },
+  "metadata": { "description": "freelab: run ML experiments on free GPUs from Claude Code.", "version": "0.4.0" },
+  "plugins": [{ "name": "freelab", "source": "./", "description": "Run ML experiments on free GPUs, with a live status page and an honest report." }]
+}

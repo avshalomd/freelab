@@ -1,0 +1,1 @@
+{"framing": "all", "zero_shot_accuracy": 0.53, "zero_shot_items": 200, "final_accuracy": 0.535, "final_ece": 0.318, "final_items": 200, "zero_shot_val_accuracy": 0.52, "final_val_accuracy": 0.54, "final_val_ece": 0.31, "val_items": 50, "gain_points": 0.5, "ece_before": 0.335, "ece_after": 0.318, "minutes": 0.95, "device": "cuda"}

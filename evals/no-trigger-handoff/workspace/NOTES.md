@@ -1,0 +1,2 @@
+- VAT lines added in invoice.py
+- TODO: rounding per line, not on the total

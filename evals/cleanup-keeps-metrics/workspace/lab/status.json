@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "updated": "2026-10-01T14:10:00+00:00",
+  "goal": {"text": "Pick the learning rate for bank-support intent fine-tuning", "metric": "accuracy", "target": 0.80, "direction": "max"},
+  "best": {"value": 0.811, "run": "full-b", "at": 290},
+  "runs": [
+    {"id": "full-a", "backend": "local", "state": "done", "step": 290, "total": 290, "metric": 0.774, "eta": "", "detail": "done", "started": "2026-10-01T11:00:00+00:00"},
+    {"id": "full-b", "backend": "local", "state": "done", "step": 290, "total": 290, "metric": 0.811, "eta": "", "detail": "done", "started": "2026-10-01T12:00:00+00:00"},
+    {"id": "full-c", "backend": "local", "state": "running", "step": 120, "total": 290, "metric": 0.702, "eta": "25 min", "detail": "running step 120/290", "started": "2026-10-01T13:50:00+00:00"}
+  ],
+  "budget": {"usd_limit": 0, "usd_spent": 0, "free_credit_note": "this machine only: $0"},
+  "decisions": [],
+  "events": [
+    {"t": "2026-10-01T13:50:00+00:00", "text": "full-c started on this machine"},
+    {"t": "2026-10-01T12:36:00+00:00", "text": "full-b done: test accuracy 0.811, the target is met"},
+    {"t": "2026-10-01T11:36:00+00:00", "text": "full-a done: test accuracy 0.774"}
+  ]
+}

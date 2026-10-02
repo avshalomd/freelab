@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]  # 3.10 is the oldest python3 freelab supports
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: sudo apt-get update && sudo apt-get install -y zsh  # some tests run the scripts under zsh too
+      - run: pip install pytest
+      - run: pytest -q
+      - run: npm i -g @anthropic-ai/claude-code@2.1.284  # the version the plugin was last validated with
+        if: matrix.python-version == '3.12'
+      - run: claude plugin validate . --strict  # the marketplace entry and plugin.json
+        if: matrix.python-version == '3.12'
+      - run: claude plugin validate .claude-plugin/plugin.json --strict  # the plugin itself, skills included
+        if: matrix.python-version == '3.12'

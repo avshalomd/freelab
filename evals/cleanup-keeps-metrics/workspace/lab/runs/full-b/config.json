@@ -1,0 +1,1 @@
+{"epochs": 2, "per_class": 30, "seed": 20260928, "lr_encoder": 0.0002, "lr_head": 0.001, "device": "mps", "max_minutes": 60}

@@ -1,0 +1,1 @@
+{"framing": "all", "zero_shot_accuracy": 0.517, "zero_shot_items": 500, "final_accuracy": 0.811, "final_items": 3076, "zero_shot_val_accuracy": 0.55, "final_val_accuracy": 0.833, "val_items": 770, "minutes": 36.0, "device": "mps"}

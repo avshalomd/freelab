@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# freelab: run one command with the project's .env loaded into its environment.
+# Usage (from the project root): scripts/withenv CMD [ARGS...]
+# If ./.env exists it is loaded with `set -a; . ./.env; set +a` (its own output silenced), then CMD replaces
+# this shell. Never prints a value; the command itself must not print one either.
+if [ "$#" -eq 0 ]; then
+  echo "usage: withenv CMD [ARGS...]" >&2
+  exit 2
+fi
+if [ -f ./.env ]; then
+  set -a
+  . ./.env >/dev/null 2>&1
+  set +a
+fi
+exec "$@"

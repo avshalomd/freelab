@@ -1,0 +1,2 @@
+{"t": "2026-10-01T10:00:00+00:00", "backend": "modal", "run": "full-modal", "usd": 0.12, "kind": "estimate", "note": "L4, about 10 min"}
+{"t": "2026-10-01T10:15:00+00:00", "backend": "modal", "run": "full-modal", "usd": 0.11, "kind": "actual", "note": "free credit"}

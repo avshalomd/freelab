@@ -1,0 +1,11 @@
+{
+  "name": "freelab",
+  "displayName": "freelab",
+  "version": "0.4.0",
+  "description": "Run ML experiments on free GPUs (Modal, Kaggle, Lightning AI) or your own machine: the agent plans them with you, watches them on a live status page and reports whether they worked.",
+  "author": { "name": "Avshalom Dayan", "url": "https://github.com/avshalomd" },
+  "homepage": "https://github.com/avshalomd/freelab",
+  "repository": "https://github.com/avshalomd/freelab",
+  "license": "MIT",
+  "keywords": ["experiments", "ml", "fine-tuning", "gpu", "modal", "lightning", "kaggle", "lab"]
+}

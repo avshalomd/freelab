@@ -1,0 +1,7 @@
+{"t": "2026-10-01T11:01:00+00:00", "step": 0, "total": 290, "split": "test", "name": "accuracy", "value": 0.517}
+{"t": "2026-10-01T11:01:30+00:00", "step": 0, "total": 290, "split": "val", "name": "accuracy", "value": 0.55}
+{"t": "2026-10-01T11:10:00+00:00", "step": 100, "total": 290, "split": "train", "name": "loss", "value": 2.1}
+{"t": "2026-10-01T11:16:00+00:00", "step": 145, "total": 290, "split": "val", "name": "accuracy", "value": 0.74}
+{"t": "2026-10-01T11:25:00+00:00", "step": 200, "total": 290, "split": "train", "name": "loss", "value": 0.9}
+{"t": "2026-10-01T11:32:00+00:00", "step": 290, "total": 290, "split": "val", "name": "accuracy", "value": 0.781}
+{"t": "2026-10-01T11:36:00+00:00", "step": 290, "total": 290, "split": "test", "name": "accuracy", "value": 0.774}

@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "updated": "2026-09-28T10:11:00+00:00",
+  "goal": {"text": "Lift bank-support intent accuracy with a few minutes of fine-tuning", "metric": "accuracy", "target": 0.80, "direction": "max"},
+  "best": {"value": 0.44, "run": "full-local", "at": 0},
+  "runs": [
+    {"id": "full-local", "backend": "local", "state": "running", "step": 100, "total": 435, "metric": 0.44, "eta": "about 40 min", "detail": "running step 100/435", "started": "2026-09-28T10:00:00+00:00"}
+  ],
+  "budget": {"usd_limit": 0, "usd_spent": 0, "free_credit_note": "this machine only: $0"},
+  "decisions": [],
+  "events": [
+    {"t": "2026-09-28T10:00:00+00:00", "text": "full-local started on this machine"}
+  ]
+}

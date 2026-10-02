@@ -1,0 +1,3 @@
+{"t": "2026-10-01T11:00:00+00:00", "backend": "local", "run": "full-a", "usd": 0, "kind": "estimate", "note": "this machine"}
+{"t": "2026-10-01T12:00:00+00:00", "backend": "local", "run": "full-b", "usd": 0, "kind": "estimate", "note": "this machine"}
+{"t": "2026-10-01T13:50:00+00:00", "backend": "local", "run": "full-c", "usd": 0, "kind": "estimate", "note": "this machine"}

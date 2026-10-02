@@ -1,0 +1,18 @@
+{
+  "probe": {
+    "os": "macos",
+    "cpu": "Apple M2",
+    "cpu_threads": 8,
+    "ram_gb": 16.0,
+    "gpu": {"kind": "apple", "name": "Apple M2", "mem_gb": 16.0, "unified": true}
+  },
+  "day": {"ram_gb": 3.0, "gpu_mem_gb": 3.0, "cpu_threads": 2},
+  "night": {"ram_gb": 12.0, "gpu_mem_gb": 12.0, "cpu_threads": 7},
+  "night_runs": true,
+  "night_window": {"start": "23:00", "end": "07:00"},
+  "idle_check": true,
+  "idle_minutes": 15,
+  "day_preset": "low",
+  "night_preset": "full",
+  "updated": "2026-10-01T09:00:00+00:00"
+}

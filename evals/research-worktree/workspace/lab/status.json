@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "updated": "2026-10-01T09:30:00+00:00",
+  "goal": {"text": "Bank-support intent accuracy", "metric": "accuracy", "target": 0.80, "direction": "max"},
+  "best": {"value": 0.7893, "run": "quick-1", "at": 290},
+  "runs": [
+    {"id": "quick-1", "backend": "kaggle", "state": "done", "step": 290, "total": 290, "metric": 0.7893, "eta": "", "detail": "done", "started": "2026-10-01T09:00:00+00:00"}
+  ],
+  "budget": {"usd_limit": 0, "usd_spent": 0, "free_credit_note": "Kaggle free quota"},
+  "decisions": [],
+  "events": [
+    {"t": "2026-10-01T09:00:00+00:00", "text": "quick-1 started on Kaggle"}
+  ]
+}
