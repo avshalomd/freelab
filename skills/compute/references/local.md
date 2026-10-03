@@ -35,7 +35,8 @@ uv run --with-requirements ${CLAUDE_PLUGIN_ROOT}/examples/banking77-laya/require
 - `--when night` waits for the night window (and waits for the machine to be idle for `idle_minutes`, default 15, when `idle_check` is set; macOS only),
   runs under the night allowance, and sets `--max-minutes` to end 10 minutes before the window closes (a
   smaller `--max-minutes` in ARGS is kept). With `--nights N` a run that hits the window's end resumes on the
-  next night, up to N nights.
+  next night, up to N nights: the launcher sleeps in between (the poll shows the run as waiting and keeps
+  watching), and a second launch of the same run id is refused while it lives.
 - On macOS it keeps the machine awake with `caffeinate -i`.
 - One local run at a time: a second launch exits 2 naming the run that holds the lock
   (`local-run.lock` in `$FREELAB_HOME`, default `~/.freelab`). A night run takes the lock only when it starts.

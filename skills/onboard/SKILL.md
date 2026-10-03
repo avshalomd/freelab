@@ -135,8 +135,9 @@ i. **Official skill:** if the reference names one, offer it in one line; install
 j. **Connection check** (`compute` §3, the reference's **Connection check**). Say what it is (a 50-step run of
    the quick start on <Provider>'s GPU that proves the whole path) and its estimate from the reference's **Cost
    model**, then ask: **Run the check** (Recommended; "about N minutes, about USD X of free credit", on Kaggle
-   "USD 0, from the weekly GPU quota") or **Not now**. On a yes, log the estimate (`compute` §6), run it, and
-   record pass or fail with the run id. On a fail, say what the CLI said; a missing CLI or key goes back to f or
+   "USD 0, from the weekly GPU quota") or **Not now**. On a yes, log the estimate (`compute` §6), run it, watch
+   it with the poll (`status` §5) plus `--goal "connection check"` (there is no charter yet, so the poll starts a
+   minimal `lab/status.json` itself), and record pass or fail with the run id. On a fail, say what the CLI said; a missing CLI or key goes back to f or
    g. Not now: the provider stays out of `services` until its check passes.
 k. **Operational.** Rewrite the marker (step 6). Say "✅ <Provider> is operational" and the check's numbers in one
    line (run id, minutes, val accuracy at step 50, cost). Explain in two or three lines what the check proved:

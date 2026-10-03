@@ -107,7 +107,9 @@ This is the one description of the poll; the other skills and the references poi
 - **Exit codes:** `0` done, and the small files (`status.txt`, `metrics.jsonl`, `summary.json`) are in
   `lab/runs/ID/`; `3` stopped, resumable (`compute` §7); `1` failed, gave up after `--max-hours`, or the provider
   says the run ended but its files could not be fetched (fetch them by hand, the reference's **Watch, fetch,
-  stop**).
+  stop**). A local run paused between nights (`--nights N`) shows as waiting, and the poll keeps watching.
+- **A wrong run id:** `--once` records nothing for a run no provider knows; an entry left by a run that never
+  launched goes with `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/status_page.py forget --lab lab RUN_ID`.
 - **When it exits:** update `best`, the spend and the stages (§2), re-publish if published, then for a planned
   run fetch what else is needed (`compute`) and go straight on to `report`. A research loop does this after every
   experiment (`research` §3).

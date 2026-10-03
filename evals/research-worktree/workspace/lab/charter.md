@@ -10,8 +10,8 @@
 - **Allowed compute:** Kaggle (T4)
 - **Decision GPU type:** T4
 - **Experiments:** each runs with `--epochs 1 --skip-test` (no test scoring).
-- **Per-experiment budget:** 15 minutes (`--max-minutes 15`)
-- **Editable surface:** the quick start's `train.py` (copied from `${CLAUDE_PLUGIN_ROOT}/examples/banking77-laya` into the loop's worktree as `experiments/banking77-laya/`), except its data loading and evaluation (`load_rows`, `encode`, `predict`, `score`, `evaluate`).
-- **Frozen:** its `data.py`, those functions in `train.py`, and the test split.
-- **Stop rules:** the target is met on validation; or 2 experiments are done; or 20 minutes have passed since "research loop started".
+- **Per-experiment budget:** 15 minutes (`--max-minutes 15`); estimate about 6-8 minutes on the T4
+- **Editable surface:** the quick start's `train.py` (copied from `${CLAUDE_PLUGIN_ROOT}/examples/banking77-laya` into the loop's worktree as `experiments/banking77-laya/`), except its data loading and evaluation (`load_rows`, `encode`, `predict`, `score`, `evaluate`) and its split construction.
+- **Frozen:** its `data.py`, those functions in `train.py`, the split construction (the split lines in `experiment()`, `VAL_PER_CLASS`, `--seed`, `--per-class`), the `--epochs 1 --skip-test` flags, and the test split.
+- **Stop rules:** the target is met on validation; or 2 experiments are done; or the next experiment's estimate (not its cap) would end it more than 25 minutes after "research loop started".
 - **Out of scope:** other models and datasets.

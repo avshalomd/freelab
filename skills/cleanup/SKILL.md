@@ -30,7 +30,8 @@ for cloud copies:
 - **Finished:** `summary.json` is in `lab/runs/ID/` (for a cloud run: fetched) and `lab/status.json` does not list
   the run as `queued`, `starting` or `running`; or the experiment has a row in `lab/results.tsv`.
 - **Running:** listed as `queued`, `starting` or `running`, or `status.txt` reads anything other than `done`,
-  `stopped (...)` or `failed: ...`; for a cloud run not yet fetched, its backend's watch decides.
+  `stopped (...)` or `failed: ...`; for a cloud run not yet fetched, its backend's watch decides. A folder with
+  no `status.txt`, no `metrics.jsonl` and no `status.json` entry (a run that never launched) has ended.
 - **Resumable:** no `summary.json`, and `stopped (...)`, or `failed: ...` with a complete checkpoint (`compute` §7).
 
 **Never removed:** anything of a running or resumable run, here or in the cloud, unless the user names that run

@@ -13,5 +13,5 @@
 - **Decision it feeds:** whether the fine-tune can reach 0.85 on validation.
 - **Need:** one T4 at a time, up to 15 minutes per experiment
 - **Placement:** Kaggle (T4)
-- **Estimate:** about 20 minutes, $0
-- **Go/no-go:** stop at the target, after 2 experiments, or at 20 minutes.
+- **Estimate:** about 12-16 minutes of experiments, plus a scoring run of about 12-14 if one wins, $0
+- **Go/no-go:** stop at the target, after 2 experiments, or when the next experiment's estimate would end after 25 minutes.
