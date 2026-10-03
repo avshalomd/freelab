@@ -4,7 +4,7 @@
 
 ## 0.4.1 - 2026-10-03
 
-Fixes from five reviews of 0.4.0.
+Fixes after a review of 0.4.0.
 
 - **Honest numbers in the quick start.** The research loop keeps a change only when it was judged on the same
   validation items as the baseline (`val_ids_sha` in `summary.json`), and the split settings are frozen. With

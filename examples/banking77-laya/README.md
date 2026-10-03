@@ -185,7 +185,8 @@ The run directory holds:
 - `ckpt/step-00000050/`: `state.pt` (about 0.6 GB), `meta.json` and the `COMPLETE` marker.
 - `summary.json`, like this one from Modal on an L4 (the numbers vary a little by backend; this run predates
   the validation split, so it has no `*_val_*` fields — a current run adds `zero_shot_val_accuracy`,
-  `final_val_accuracy`, `final_val_ece` and `val_items`):
+  `final_val_accuracy`, `final_val_ece`, `val_items`, `val_ids_sha`,
+  `torch`, `transformers` and `device_name`):
 
 ```json
 {"framing": "all", "framing_reason": "the all-77 sequence, no option cut, fits max_len 512 for 100.0% of test

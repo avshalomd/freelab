@@ -54,7 +54,7 @@ background on what that is and where freelab differs: read it only if the user a
 There is nothing for the human to type. Once the charter is approved (`plan` §1 or §4), finish section 1
 and start the loop (section 3) at once, in this session.
 
-**Permission prompts.** The loop runs unattended (the quick start's for 10-20 minutes, a longer one for hours),
+**Permission prompts.** The loop runs unattended (the quick start's for about 10-17 minutes, a longer one for hours),
 and a permission prompt stalls it until someone answers. This skill pre-approves the poll, the ledger, the page,
 `stats.py` and the loop's git commands in its worktree; launches still ask. Before the first experiment, say so
 in one line and ask one question: **Turn on auto mode** (Recommended; the human switches it: the permission-mode

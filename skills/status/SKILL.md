@@ -26,7 +26,7 @@ EOF
 ```
 
 A poll started with no `status.json` (onboarding's connection check, before any charter) writes a minimal one
-itself (target "none set yet"); once the charter exists, set its real goal and numeric target with
+itself (no target yet: the page shows "none set yet"); once the charter exists, set its real goal and numeric target with
 `status_page.py set --lab lab goal '<JSON>'` (§2).
 
 `direction` is `max` or `min`. The ledger holds list prices, free credit included, so `usd_limit` is the

@@ -27,8 +27,8 @@ explanation is in your message.
   the target is on the validation split, and the stop rules include "K non-improving experiments in a row"
   (default 8). The decision GPU type is one type for the baseline and every keep or discard; by default the GPU
   type the first run used (the quick start: Modal's L4, a T4 on Kaggle and Lightning AI), so that run can be the
-  baseline. The per-experiment budget is the baseline's minutes on that type (model and
-  data downloads count) plus runlib's 2-minute margin (it stops a run 2 minutes before `--max-minutes`), with some
+  baseline. The per-experiment budget is the baseline's minutes on that type for the experiments' flags (shorter
+  when they drop epochs or the test pass; model and data downloads count) plus runlib's 2-minute margin (it stops a run 2 minutes before `--max-minutes`), with some
   headroom; a time stop rule uses each experiment's estimate, never this cap. The frozen parts include how the
   splits are drawn (the seed, the per-class counts), so every experiment is judged on the same validation items.
   The quick start's loop values are in the shipped charter's "Next: try to beat it".
