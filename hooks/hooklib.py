@@ -18,7 +18,7 @@ LAB_FILES = ("charter.md", "ledger.jsonl", ".launches")  # names only freelab wr
 def _freelab_status(path: Path) -> bool:
     """lab/status.json in freelab's own shape (status_page.validate: version 1, a goal object with a metric)."""
     try:
-        doc = json.loads(path.read_text())
+        doc = json.loads(path.read_text(encoding="utf-8", errors="replace"))
     except (OSError, ValueError):
         return False
     return isinstance(doc, dict) and doc.get("version") == 1 and isinstance(doc.get("goal"), dict) \
@@ -37,7 +37,7 @@ def uses_freelab(cwd) -> bool:
             return True
         env = root / ".env"
         if env.is_file():
-            with env.open(errors="replace") as f:
+            with env.open(encoding="utf-8", errors="replace") as f:
                 return any(line.startswith("# freelab:") for line in f)
     except OSError:
         return False

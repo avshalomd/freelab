@@ -47,7 +47,9 @@ from hooklib import hook_cwd, uses_freelab, read_input  # noqa: E402
 
 KEY_NAMES = ("MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET", "KAGGLE_API_TOKEN", "KAGGLE_KEY", "LIGHTNING_API_KEY",
              "LIGHTNING_USER_ID")
-KEY_REF = re.compile(r"\$\{?(?:%s)\b" % "|".join(KEY_NAMES))
+KEY_REF = re.compile(r"(?<!\\)\$\{?(?:%s)\b" % "|".join(KEY_NAMES))  # `\$KEY` is literal text (_prepare)
+# `KEY="$KEY"` (`docker run -e`, `--env=`) passes a key on to a command's environment without printing it
+KEY_PASS = re.compile(r"(?:--env=)?(%s)=\$\{?\1\}?" % "|".join(KEY_NAMES))
 KEY_WORD = re.compile(r"\b(?:%s)\b" % "|".join(KEY_NAMES))
 SECRET_TOKEN = re.compile(r"(?:^|/)\.env(?:[*?\[].*)?$|(?:^|/)\.modal\.toml$|(?:^|/)\.kaggle(?:/|$)"
                           r"|(?:^|/)\.lightning(?:/|$)|(?:^|/)kaggle\.json$")
@@ -343,12 +345,18 @@ _OUTPUT = re.compile(r"print|console\.\w+|echo|puts|\bp\b|\bpp\b|\bsay\b|write|s
                      r"|\bwarn\b|inspect|\bexit\s*\(|\bsys\.exit\b")
 
 
+# A presence test that does not print the value: `'set' if os.environ.get("KEY") else 'missing'`, `"KEY" in os.environ`.
+_PRESENCE = re.compile(r"""\b(?:if\s+(?:not\s+)?|bool\s*\(\s*)(?:os\.)?(?:environ\.get|getenv)\s*\(\s*['"]\w+['"]\s*\)"""
+                       r"""|['"]\w+['"]\s+(?:not\s+)?in\s+(?:os\.)?environ\b""")
+
+
 def env_leak(cmd: str, args: list[str]) -> bool:
     """True when interpreter (or awk) code reads the whole environment, or a freelab key, and outputs something:
     `python3 -c 'import os; print(os.environ)'`, `node -e 'console.log(process.env)'`, `perl -e 'print %ENV'`,
     `ruby -e 'p ENV.to_h'`, `awk 'BEGIN{for(k in ENVIRON) print k}'`. One named variable that is not a key
-    (`print(os.environ.get("HF_HOME"))`) stays allowed. Script files are not read: only the command line."""
-    code = " ".join(args)
+    (`print(os.environ.get("HF_HOME"))`) and a presence test (_PRESENCE) stay allowed. Script files are not read:
+    only the command line."""
+    code = _PRESENCE.sub(" ", " ".join(args))
     if _SHELL_OUT_ENV.search(code):  # env or printenv run from the code prints by itself
         return True
     outputs = bool(_OUTPUT.search(code)) or (cmd in ("node", "deno", "bun") and
@@ -399,7 +407,7 @@ def split_heredocs(command: str):
 def check_code(cmd: str, code: str):
     """Interpreter code fed on stdin (a heredoc, `python3 <<< "..."`, `echo "..." | python3`): deny code that
     prints the environment or a key, or reads .env or a key file."""
-    if KEY_WORD.search(code) and re.search(r"print|console\.log|puts|stdout|write", code):
+    if KEY_WORD.search(_PRESENCE.sub(" ", code)) and re.search(r"print|console\.log|puts|stdout|write", code):
         return "deny", DUMP_REASON
     if env_leak(cmd, [code]):
         return "deny", DUMP_REASON
@@ -427,6 +435,9 @@ def substitutions(word: str) -> list[str]:
     out = re.findall(r"`([^`]*)`", word)
     i = word.find("$(")
     while i != -1:
+        if i and word[i - 1] == "\\":  # a literal `\\$(` (single-quoted or escaped)
+            i = word.find("$(", i + 2)
+            continue
         level, j = 0, i + 1
         while j < len(word):
             level += {"(": 1, ")": -1}.get(word[j], 0)
@@ -440,13 +451,16 @@ def substitutions(word: str) -> list[str]:
 
 def _prepare(command: str) -> str:
     """Unquoted newlines become `;` (a command separator) and unquoted backticks `$(` `)`; backslash-newline joins
-    lines."""
+    lines. A `$` the shell takes literally (inside single quotes, or escaped as `\\$`) comes out of tokenize as
+    `\\$`, so `echo '$KAGGLE_KEY'` and `git commit -m "use \\$KAGGLE_KEY"` name no variable."""
     out, quote, tick, i = [], None, False, 0
     while i < len(command):
         c = command[i]
         if c == "\\" and quote != "'" and i + 1 < len(command):
             if command[i + 1] == "\n":
                 out.append(" ")
+            elif command[i + 1] == "$" and not quote:
+                out.append("\\\\\\$")  # three backslashes and $: shlex leaves one backslash
             else:
                 out.append(command[i:i + 2])
             i += 2
@@ -454,7 +468,7 @@ def _prepare(command: str) -> str:
         if quote:
             if c == quote:
                 quote = None
-            out.append(c)
+            out.append("\\$" if c == "$" and quote == "'" else c)
         elif c in "'\"":
             quote = c
             out.append(c)
@@ -666,13 +680,16 @@ def _find_exec(args: list[str], secret: str, depth: int, here: str):
 
 
 def _dotenv(args: list[str], depth: int, here: str):
-    """python-dotenv's CLI (`dotenv`, `python -m dotenv`): `list` and `get` print values; `run CMD` runs CMD with
-    them loaded, and CMD is checked."""
-    i = 0
+    """python-dotenv's CLI (`dotenv`, `python -m dotenv`): `list` and `get` print values (of .env, the default
+    file, or of `-f FILE` when that is a key file); `run CMD` runs CMD with them loaded, and CMD is checked."""
+    i, file = 0, ".env"
     while i < len(args) and args[i].startswith("-"):
-        i += 2 if args[i] in ("-f", "--file", "-q", "--quote", "-e", "--export") else 1
+        name, eq, val = args[i].partition("=")
+        if name in ("-f", "--file"):
+            file = val if eq else (args[i + 1] if i + 1 < len(args) else "")
+        i += 2 if not eq and name in ("-f", "--file", "-q", "--quote", "-e", "--export") else 1
     sub = args[i] if i < len(args) else ""
-    if sub in ("list", "get"):
+    if sub in ("list", "get") and is_secret_token(file):
         return "deny", DUMP_REASON
     if sub == "run" and depth < 3:
         rest = args[i + 1:]
@@ -694,8 +711,9 @@ def check_segment(words, redirs, depth: int, here: str = ".", piped=()):
     for op, target in redirs:
         if op in ("<", "<>", "<&") and is_secret_token(target):
             return "deny", READ_REASON.replace("{what}", "feeding .env or a key file into a command")
-        if op in (">", ">|", "&>") and base(target) == ".env":
-            return "deny", TRUNCATE_REASON
+        if op in (">", ">|", "&>") and base(target) == ".env" \
+                and os.path.lexists(os.path.join(here, os.path.expanduser(target))):
+            return "deny", TRUNCATE_REASON   # writing a new .env (`cat .env.example > .env`) is fine
     if depth < 3:
         for w in words + [t for _, t in redirs]:
             for inner in substitutions(w):
@@ -723,8 +741,12 @@ def check_segment(words, redirs, depth: int, here: str = ".", piped=()):
         return check_shell(" ".join(args), depth + 1, here)
     # A key named on any other command line (`sed "s/x/$KAGGLE_KEY/"`, `envsubst '$KAGGLE_KEY'`, `cat <<< ...`)
     # can end up printed or written out; tests (`[ -n "$KAGGLE_KEY" ]`) and `modal token set` are fine.
-    if any(KEY_REF.search(w) for w in words + [t for _, t in redirs]) and cmd not in KEY_REF_OK \
+    # git and gh are left alone (no rules on git commands): a commit message or PR body is text.
+    if any(KEY_REF.search(w) and not KEY_PASS.fullmatch(w) for w in words + [t for _, t in redirs]) \
+            and cmd not in KEY_REF_OK and cmd not in ("git", "gh") \
             and not (cmd == "modal" and args[:2] == ["token", "set"]):
+        return "deny", DUMP_REASON
+    if cmd == "envsubst" and any(KEY_WORD.search(a) for a in args):   # it fills `'$KEY'` in from the environment
         return "deny", DUMP_REASON
     if cmd in ("rm", "unlink", "shred") and secret_args:
         return "ask", ASK_DELETE_REASON.replace("{what}", f"{secret_args[0]} and the keys in it")
@@ -754,7 +776,7 @@ def check_segment(words, redirs, depth: int, here: str = ".", piped=()):
         code = " ".join(args)
         if SECRET_IN_CODE.search(code) and not secret_args and re.search(r"\s-[ce]\b|^-[ce]\b", " " + code):
             return "deny", READ_REASON.replace("{what}", f"reading .env or a key file from `{cmd}`")
-        if KEY_WORD.search(code) and re.search(r"print|echo|console\.log|puts|write|stdout", code):
+        if KEY_WORD.search(_PRESENCE.sub(" ", code)) and re.search(r"print|echo|console\.log|puts|write|stdout", code):
             return "deny", DUMP_REASON
         stdin = [t for op, t in redirs if op == "<<<"]   # `python3 <<< "..."`
         if piped and base(piped[0]) in ("echo", "printf") and all(a.startswith("-") for a in args):
@@ -897,7 +919,7 @@ def _run_ids(cwd: str) -> set:
     except OSError:
         pass
     try:
-        doc = json.loads((lab / "status.json").read_text())
+        doc = json.loads((lab / "status.json").read_text(encoding="utf-8", errors="replace"))
         ids |= {str(r.get("id")) for r in doc.get("runs") or [] if isinstance(r, dict) and r.get("id")}
     except (OSError, ValueError, AttributeError):
         pass
@@ -983,7 +1005,7 @@ def _freelab_kernel_dir(rest: list[str], cwd: str, here: str) -> bool:
     if backends in p.parents or "/lab/backends/" in "/" + _path_tail(d) + "/":
         return True
     try:
-        meta = json.loads((p / "kernel-metadata.json").read_text())
+        meta = json.loads((p / "kernel-metadata.json").read_text(encoding="utf-8", errors="replace"))
         return _freelab_slug(str(meta.get("id", ""))) or str(meta.get("title", "")).startswith("freelab-")
     except (OSError, ValueError, AttributeError):
         return False
@@ -1043,7 +1065,7 @@ def _charter_problems(lab: Path) -> list[str]:
         return ["no lab/charter.md: run the plan skill"]
     target = budget = False
     label = re.compile(r"^\s*(?:[-*+]|\d+\.)?\s*(?:\*\*|__)?\s*(target|budget)\b[^:\n]*:(.*)$", re.I)
-    for line in charter.read_text(errors="replace").splitlines():
+    for line in charter.read_text(encoding="utf-8", errors="replace").splitlines():
         m = label.match(line)
         if not m:
             continue
@@ -1063,7 +1085,7 @@ def _last_launch(lab: Path) -> datetime | None:
     p = lab / ".launches"
     if not p.is_file():
         return None
-    lines = [l for l in p.read_text(errors="replace").splitlines() if l.strip()]
+    lines = [l for l in p.read_text(encoding="utf-8", errors="replace").splitlines() if l.strip()]
     return _parse_t(lines[-1].split()[0]) if lines else None
 
 
@@ -1072,7 +1094,7 @@ def _has_new_estimate(lab: Path) -> bool:
     if not p.is_file():
         return False
     since = _last_launch(lab)
-    for line in p.read_text(errors="replace").splitlines():
+    for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
         try:
             rec = json.loads(line)
         except (json.JSONDecodeError, ValueError):
@@ -1138,7 +1160,7 @@ def record_launch(lab: Path, backend: str) -> None:
     """Append the launch to lab/.launches: the next gated launch then needs an estimate newer than this one."""
     try:
         lab.mkdir(parents=True, exist_ok=True)
-        with (lab / ".launches").open("a") as f:
+        with (lab / ".launches").open("a", encoding="utf-8") as f:
             f.write(datetime.now(timezone.utc).isoformat(timespec="seconds") + f"\t{backend}\n")
     except OSError:
         pass

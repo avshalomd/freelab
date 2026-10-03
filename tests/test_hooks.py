@@ -1066,3 +1066,74 @@ def test_slow_patterns_and_huge_commands_do_not_stall(lab_proj, home):
     t = time.time()
     assert hook(GUARD, bash(lab_proj, "cat .env; echo " + "x" * 260_000), home) is None   # too long: not parsed
     assert time.time() - t < 10
+
+
+@pytest.mark.parametrize("command,expect", [
+    # a literal `$KEY` (single-quoted or escaped) names no variable; git and gh are left alone
+    ("git commit -m 'env: use $KAGGLE_API_TOKEN'", None),
+    ('git commit -m "fix: read \\$MODAL_TOKEN_ID"', None),
+    ('git tag -a v1 -m "docs for $MODAL_TOKEN_ID"', None),
+    ("gh pr create --title x --body 'set $MODAL_TOKEN_ID'", None),
+    ("grep -n '$KAGGLE_API_TOKEN' README.md", None),
+    ("rg -F '$KAGGLE_API_TOKEN' docs/", None),
+    ("sed -i '' 's/foo/$KAGGLE_API_TOKEN/' README.md", None),
+    ("echo '$KAGGLE_API_TOKEN'", None),
+    ("echo \\$KAGGLE_KEY", None),
+    ("echo 'see $(cat .env) in the docs'", None),          # a literal `$(...)` is text too
+    ('docker run -e MODAL_TOKEN_ID="$MODAL_TOKEN_ID" img', None),
+    ('docker run --env MODAL_TOKEN_SECRET="${MODAL_TOKEN_SECRET}" img', None),
+    ('docker run --env=KAGGLE_API_TOKEN="$KAGGLE_API_TOKEN" img', None),
+    ('echo "$KAGGLE_API_TOKEN"', "deny"),
+    ("echo $KAGGLE_KEY", "deny"),
+    ('docker run -e TOKEN="$MODAL_TOKEN_ID" img', "deny"),  # not a pass-through of the same name
+    ('sed "s/x/$MODAL_TOKEN_SECRET/" tpl', "deny"),
+    # dotenv: list/get only of a key file
+    ("dotenv -f .env.example list", None),
+    ("dotenv --file=.env.example get X", None),
+    ("dotenv -f .env list", "deny"),
+    ("dotenv list", "deny"),
+    # presence checks that print no value
+    ("python3 -c \"import os; print('set' if os.environ.get('MODAL_TOKEN_ID') else 'missing')\"", None),
+    ("python3 -c \"import os; print('KAGGLE_API_TOKEN' in os.environ)\"", None),
+    ("python3 -c \"import os; print(os.environ.get('MODAL_TOKEN_ID') or 'missing')\"", "deny"),
+    ("python3 -c \"import os\nif os.getenv('KAGGLE_KEY'): print(os.environ['KAGGLE_KEY'])\"", "deny"),
+])
+def test_literal_key_names_and_pass_through_are_allowed(lab_proj, home, command, expect):
+    (lab_proj / ".env").write_text(ENV_TEXT)
+    assert decision(hook(GUARD, bash(lab_proj, command), home)) == expect
+
+
+@pytest.mark.parametrize("command", ["cat .env.example > .env", 'echo "X=" > .env', "printf 'A=\\n' >| .env"])
+def test_redirect_creates_a_new_env_but_never_overwrites_one(lab_proj, home, command):
+    assert hook(GUARD, bash(lab_proj, command), home) is None
+    (lab_proj / ".env").write_text(ENV_TEXT)
+    out = hook(GUARD, bash(lab_proj, command), home)
+    assert decision(out) == "deny" and "overwrite .env" in out["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+def test_hooks_read_lab_files_as_utf8(lab_proj, home):
+    """status.json, kernel-metadata.json and .stop-reminded with non-ASCII text, under a non-UTF-8 locale."""
+    lab = lab_proj / "lab"
+    (lab / "runs" / "exp-é").mkdir(parents=True)
+    (lab / "runs" / "exp-é" / "summary.json").write_text("{}")
+    (lab / "status.json").write_text(json.dumps({"runs": [{"id": "exp-é", "state": "done"}],
+                                                 "events": [{"t": "x", "text": "naïve run ✓"}]},
+                                                ensure_ascii=False), encoding="utf-8")
+    (lab_proj / "k").mkdir()
+    (lab_proj / "k" / "kernel-metadata.json").write_text(json.dumps({"id": "me/freelab-é", "title": "café"},
+                                                                    ensure_ascii=False), encoding="utf-8")
+    env = {**os.environ, "HOME": str(home), "LC_ALL": "C", "LANG": "C", "PYTHONUTF8": "0",
+           "PYTHONIOENCODING": "utf-8"}
+
+    def run(script, payload):
+        r = subprocess.run([sys.executable, str(script)], input=json.dumps(payload), capture_output=True,
+                           text=True, env=env, timeout=20)
+        assert r.returncode == 0 and r.stderr == ""
+        return json.loads(r.stdout) if r.stdout.strip() else None
+
+    assert run(GUARD, bash(lab_proj, "lightning job delete exp-é")) is not None   # status.json read: a freelab job
+    assert decision(run(GUARD, bash(lab_proj, "kaggle kernels push -p k"))) == "deny"   # its metadata: freelab's
+    out = run(STOP, stop_input(lab_proj))
+    assert out["decision"] == "block" and "exp-é" in out["reason"]
+    assert (lab / ".stop-reminded").read_text(encoding="utf-8").split() == ["exp-é"]
+    assert run(STOP, stop_input(lab_proj)) is None

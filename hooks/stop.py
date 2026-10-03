@@ -89,7 +89,7 @@ def reported_ids(lab: Path, ids) -> set:
     texts = []
     for p in reports(lab):
         try:
-            texts.append(p.read_text(errors="replace"))
+            texts.append(p.read_text(encoding="utf-8", errors="replace"))
         except OSError:
             continue
     text = "\n".join(texts)
@@ -107,14 +107,14 @@ def evaluate(data: dict):
     status_t = _mtime(status)
     if status_t is None:
         return None
-    doc = json.loads(status.read_text())
+    doc = json.loads(status.read_text(encoding="utf-8", errors="replace"))
     if not isinstance(doc, dict) or poll_running(data) or loop_active(lab, doc):
         return None
     runs = [r for r in doc.get("runs") or [] if isinstance(r, dict)]
     if any(r.get("state") in ACTIVE for r in runs):
         return None
     reminded_file = lab / ".stop-reminded"
-    reminded = set(reminded_file.read_text().split()) if reminded_file.is_file() else set()
+    reminded = set(reminded_file.read_text(encoding="utf-8", errors="replace").split()) if reminded_file.is_file() else set()
     report_t = newest_report_t(lab)
     candidates = []
     for run in runs:
@@ -129,7 +129,7 @@ def evaluate(data: dict):
                if rid not in named and (report_t is None or report_t < finished_at(lab, run, status_t))]
     if not pending:
         return None
-    with reminded_file.open("a") as f:
+    with reminded_file.open("a", encoding="utf-8") as f:
         f.write("".join(rid + "\n" for rid in pending))
     return {"decision": "block", "reason": REASON.format(runs=", ".join(pending))}
 
