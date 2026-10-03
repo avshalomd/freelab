@@ -1,106 +1,100 @@
 # Changelog
 
+0.4.0 is the first public release; earlier entries are kept for context.
+
+## 0.4.1 - 2026-10-03
+
+Fixes from five reviews of 0.4.0.
+
+- **Honest numbers in the quick start.** The research loop keeps a change only when it was judged on the same
+  validation items as the baseline (`val_ids_sha` in `summary.json`), and the split settings are frozen. With
+  `--skip-test`, `train.py` no longer loads the test split at all, and the framing is chosen on the training
+  sample. `summary.json` records the torch and transformers versions and the device. The docs say that ECE is
+  measured at Laya's zero-shot temperature, that a keep inside the validation interval may be noise, and that
+  each result is one run, one seed.
+- **A shorter quick-start loop:** a 10-minute cap per experiment on Modal's L4, a time stop rule by each
+  experiment's estimate rather than its cap, and one total that includes the scoring run (about 10-17 minutes on
+  the L4). Train longer rounds skip the test split too; only the chosen round gets one scoring run.
+- **The end of a research loop:** the agent offers to merge the branch for you ("merge the lab branch"), or
+  says plainly that nothing was kept.
+- **Setup:** no welcome question when you asked to set up; one question for this computer's defaults; the
+  `.env` placeholders come at each provider's key step; a `lab/` folder that is not freelab's is left alone until
+  you say so. The connection check's poll works before there is a charter.
+- **Guard hooks:** more launch forms are recognised (a `cd` into `lab/backends`, `modal run -m`), more ways of
+  reading a key are blocked, and false alarms are gone: copying `.env.example` to a new `.env`, `rsync
+  --exclude .env`, and searching code for a key's name in folders without a `.env`.
+- **Scripts:** the poll ends as failed when a finished run's files could not be fetched, and a poll for a run
+  that never started can be forgotten; `resources.py check --cloud-available` needs no local allowance; text
+  files are written as UTF-8 everywhere; the ETA after a resume is right.
+- **Shipped templates:** the Modal app and the Kaggle runner are files in `scripts/backends/templates/`, copied
+  into the lab, not written out from the docs.
+- **Shorter skills:** one description of the poll, smaller `lab`, `status` and `report` skills, and descriptions
+  that say what each skill is not for.
+- **Docs:** README install notes for the desktop app and the minimum Claude Code version (2.1.284), plainer
+  safety notes, a CI badge, and the Apache-2.0 licence of `laya_head.py` shipped beside it.
+
 ## 0.4.0 - 2026-10-02
 
-Hooks that guard keys, money and the report; a poll that keeps the status page live; fixes from the third live
-trial and from an audit of the skills.
+Hooks that guard keys, money and the report; a poll that keeps the status page live; the research loop in its
+own git worktree.
 
-- **Hooks** (they act only in a project that uses freelab: `lab/` holds one of freelab's files, or `.env` has the
-  line onboarding wrote; a `lab/` folder alone is not enough. Even there, the delete and launch rules cover only
-  freelab's own runs and storage: the user's own launches and deletes get no output):
+### Highlights
+
+- **Guard hooks** that block reading `.env` and the services' key files, block one of freelab's launches without
+  a numeric target, a budget and a logged estimate, ask before deleting freelab's cloud data, and remind the agent
+  to write the report. They act only in a project that uses freelab, and only on freelab's own runs and storage.
+- **A background poll** (`scripts/poll.py`) watches each run, keeps `status.json` and the page current, and
+  prints only validation lines.
+- **Race-free status edits:** `status_page.py set` and `event` replace hand edits of `status.json`.
+- **The research loop in its own git worktree** (`lab/worktrees/loop`, branch `lab/<tag>`), so your files are
+  never touched; experiment code goes in `experiments/<name>/`.
+- **Train longer, in rounds**, each a warm start, stopping when validation stops improving.
+- **Cloud first:** a run wanted now goes to a connected free tier; this machine when asked or for a night run.
+- **A shorter quick-start loop** with `--skip-test` experiments that never see the test split.
+- **Desktop-friendly setup:** the agent runs every install and sign-in itself.
+
+### Details
+
+- **Hooks:** they act only where `lab/` holds one of freelab's files or `.env` has the line onboarding wrote.
   - **Guard** (`PreToolUse`): denies reading or editing `.env` and the key files (`~/.modal.toml`, `~/.kaggle/`,
-    `~/.lightning/`) and commands that print a key or the whole environment; asks before deleting freelab's
-    cloud data (`modal volume rm freelab-runs ...`, deletes of a `freelab-...` Kaggle kernel or dataset, Lightning
-    deletes of the `freelab` Studio, `freelab-runs/`, `freelab-init/` or a freelab run's job) and denies `modal
-    volume delete freelab-runs`; blocks one of freelab's launches (`modal run` of `lab/backends/modal_app.py`,
-    `kaggle kernels push` of a kernel folder under `lab/backends/` or with a `freelab-` id, `lightning job run` on
-    the `freelab` Studio or into `freelab-runs`, the plugin's `local_run.py`) unless the charter has a numeric
-    Target and a Budget, an estimate was logged in the ledger since the last launch, and a Modal, Lightning AI or
-    local run has a minutes cap. Smoke runs and `--help` are exempt (from the delete ask too).
-    Code run with `python -c`, `node -e`, `perl -e`, `ruby -e` or awk that prints the environment or a key is
-    denied. Git commands are left alone: freelab adds no rule to git.
-  - **Launch record** (`PostToolUse`, Bash): one of freelab's launches (the guard's test) is recorded in
-    `lab/.launches` only once its command has run, so a denied, declined or failed launch does not use up its
-    estimate.
-  - **Stop:** asks once for the report when a run has finished that no `lab/report*.md` names or postdates (the
-    kept `report-run1.md` of a Train longer round counts). Quiet while a poll runs, during a research loop (the
-    newest loop event is "research loop started"), and for smoke runs.
-  - **Session start:** the onboarding offer comes once per machine: after printing it, the hook writes
-    `~/.freelab/nudged` (under `FREELAB_HOME` when set) and stays quiet from then on; "Not now" needs nothing
-    written.
-- **Scope:** freelab handles the experiments the user asks for; the rest of the project and the session is the
-  user's other work. The `lab` skill says so near its top: `lab/` is the experiments' area, the charter, report,
-  next steps and handoff cover freelab's runs only, and after the report and next steps the agent goes back to
-  what the user was doing. The hooks follow the same scope.
-- **Keys, one rule:** the secrets rule is written once, in `lab`, and the guard enforces it. `scripts/withenv`
-  loads `.env` into one command (it replaces every `set -a; [ -f .env ] ...` prefix); `scripts/env.sh add`
-  writes empty placeholders and `env.sh check` says which keys are filled in, never printing a value.
-- **The poll:** `scripts/poll.py BACKEND RUN_ID`, started in the background, replaces the hand-written poll
-  loops. It checks the run, updates `status.json` under a lock and renders the page on every check: every 30
-  seconds in the first 5 minutes and for short runs, then every 90 seconds up to about 3 hours, 5 minutes up to
-  12 and 15 minutes beyond. It exits 0 when the run is done, 3 when it stopped and can resume, and 1 when it
-  failed or gave up, and prints only validation lines, so a research loop never sees a test score. On Kaggle it
-  restarts the live log stream up to 3 times; on Modal it reads the app id from `--link` and ends the run as
-  failed when the app stopped without writing `status.txt`; on Lightning AI a job the provider reports as
-  running reads as running before its first status line.
-- **Status edits without races:** `status_page.py event` adds an event and `status_page.py set KEY JSON` sets
-  `best`, `budget` (or one `budget.NAME`), `stages`, `decisions`, `goal`, `layout` or `refresh_seconds`, each
-  under the poll's lock, validated, written atomically and rendered; the skills use them instead of editing
-  `status.json`. Events stay newest first and capped at 50, but "research loop ..." events are never trimmed.
-- **Run links:** each launch gives the run's page on the provider (passed to the poll as `--link`); the status
-  page shows it.
-- **Status page blocks:** the page is built from blocks in a `layout` list in `status.json` (headline, progress,
-  charts, health, plan, cost and time, details, runs, results, decisions, events, measurements, glossary), plus
-  custom static blocks from `lab/blocks/`. `status.json` may also carry `link`, `expected_minutes` and
-  `refresh_seconds`. The `status` skill has a Building blocks section with examples (a fine-tune, a research
-  loop or sweep, batch inference, a benchmark, RL). The local file is the live page; a claude.ai copy is
-  re-published when the agent acts.
-- **Placement is cloud first:** a run wanted now goes to a connected cloud service while free credit is left
-  (`resources.py check --prefer cloud`); this machine is used when asked, when nothing is connected or for a
-  night run, which is offered, never chosen silently.
-- **The research loop in its own worktree:** `lab/worktrees/loop` on branch `lab/<tag>`; every edit, commit and
-  reset happens there, never in the user's working copy. The quick start's copy goes in
-  `experiments/banking77-laya/` in the worktree (experiment code freelab writes or copies into a project goes in
-  `experiments/<name>/`, never the project root). At the end the agent names the branch to merge. Candidates use
-  sibling worktrees. `autoresearch.md` is marked optional reading.
-- **Train longer, in rounds:** up to 3 rounds of one more epoch by default, each a warm start from the round
-  before under its own run id, stopping when validation stops improving; only the chosen round's test score is
-  read. Written once, in `plan`; each round shows on the status page as a run.
-- **Scripts for the arithmetic and the cleanup:** `stats.py wilson P N` replaces the hand formula in the report;
-  `cleanup.py inventory|light|remove` does the local cleanup inside a fixed scope.
-- **Third-trial fixes:**
-  - Modal's money safety is the **Usage limit** (Settings → Usage & billing), explained before asking: what the
-    card may be charged beyond the credit; set it as low as the page allows.
-  - The measured time and cost per provider live in one place, the Budget of the example's charter; the other
-    files point there.
-  - A charter change in the user's own words gets the same four parts (what, why, alternatives, what it means)
-    before it is applied, then Apply the change or Keep the recommendation.
-  - Onboarding checks for `uv` and `npx` and offers the install line, installing only on a yes.
-- **Skill text (from the audit):** the eight descriptions shrink from 3,975 to about 2,300 characters; every
-  skill but `lab` starts by loading `lab`; cross-skill paths are anchored on `${CLAUDE_PLUGIN_ROOT}`; repeated
-  facts are written once; the three cloud references gain a contents line; `local.json` is described under
-  `FREELAB_HOME`; the lab's file list is complete, including the poll's small files.
-- **Moved here from the `status` skill:** in the second trial the published page sat unchanged for the whole run
-  until the user asked, because a published Artifact changes only when re-published. 0.3.1 re-published it on
-  every poll; 0.4.0 makes the local file, rendered by the poll, the live page.
-- **README:** a Requirements section, the hooks described plainly, and a verification table of what has run live
-  and what has not.
-- **A shorter quick-start loop:** "Try to beat it" targets validation accuracy of at least 0.85 against the quick
-  start's own run, with 2 one-epoch experiments of at most 15 minutes and a 20-minute cap, about 15-20 minutes in
-  all (an estimate, not yet measured). The new `--skip-test` flag in `train.py` leaves out the test scoring, so
-  experiments never see test; a scoring run without it is needed only when an experiment wins. The decision GPU
-  type defaults to the type of the first run. The single quick-start run stops after its 2 epochs or 20 minutes.
-- **Desktop-friendly setup:** the agent runs every install and sign-in itself (`modal token new` and `kaggle auth
-  login` in the background, tools in `~/.local/bin` by full path) and never asks the user to open a terminal or
-  change their PATH; Lightning AI uses the `.env` key. `.gitignore` is touched only inside a git repository.
-- **Money asks:** the connection check is asked first, with its estimate (**Run the check** or **Not now**); an
-  approved charter or plan is the yes for the runs inside it; moving a run from Kaggle to a paid service counts as
-  spending; a loop compares the ledger total with `budget.usd_limit`.
-- **Report:** for runs and rounds that were not chosen, only validation scores are read.
-- **Cloud names:** the Kaggle and Lightning AI names come from the experiment folder's name, lowercased.
-- **Docs and evals:** internal planning notes are gone from `docs/`; the status-page picture is re-shot on a
-  Modal L4 quick start; the evals use only synthetic data, seed their own home, and gain `charter-has-target`
-  and `onboard-modal-key`. CI tests Python 3.10 and 3.12.
+    `~/.lightning/`) and commands that print a key or the whole environment, including `python -c`, `node -e`,
+    `perl -e`, `ruby -e` and awk code that does; asks before deleting freelab's cloud data (`modal volume rm
+    freelab-runs ...`, deletes of a `freelab-...` Kaggle kernel or dataset, Lightning deletes of the `freelab`
+    Studio or a freelab run's job) and denies `modal volume delete freelab-runs`; blocks one of freelab's launches
+    (`modal run` of `lab/backends/modal_app.py`, `kaggle kernels push` of a kernel folder under `lab/backends/`,
+    `lightning job run` on the `freelab` Studio, the plugin's `local_run.py`) unless the charter has a numeric
+    Target and a Budget, an estimate was logged since the last launch, and a Modal, Lightning AI or local run has
+    a minutes cap. Smoke runs and `--help` are exempt. Git is left alone.
+  - **Launch record** (`PostToolUse`): a launch is recorded in `lab/.launches` only once its command has run.
+  - **Stop:** asks once for the report when a finished run has none; quiet while a poll or a research loop runs.
+  - **Session start:** the onboarding offer comes once per machine.
+- **Scope:** freelab handles the experiments you ask for; `lab/` is their area, and after the report the agent
+  goes back to what you were doing.
+- **Keys:** the secrets rule is written once, in `lab`. `scripts/withenv` loads `.env` into one command;
+  `scripts/env.sh add` writes empty placeholders and `env.sh check` says which keys are filled in.
+- **The poll:** every 30 seconds in the first 5 minutes and for short runs, then every 90 seconds up to about 3
+  hours, 5 minutes up to 12 and 15 minutes beyond; exit 0 done, 3 stopped and resumable, 1 failed. On Kaggle it
+  streams the live log; on Modal it reads the app id from `--link`.
+- **Run links:** each launch gives the run's page on the provider; the status page shows it.
+- **Status page blocks:** the page is built from a `layout` list of blocks, plus custom static blocks from
+  `lab/blocks/`. The local file is the live page; a claude.ai copy is re-published when the agent acts.
+- **Train longer:** up to 3 rounds of one more epoch by default, each under its own run id; only the chosen
+  round's test score is read.
+- **Scripts:** `stats.py wilson P N` for the report's intervals; `cleanup.py inventory|light|remove` for the
+  local cleanup inside a fixed scope.
+- **Money and Modal:** Modal's money safety is the Usage limit, explained before asking; the connection check
+  is asked first with its estimate; an approved charter or plan is the yes for the runs inside it; moving a run
+  from Kaggle to a paid service counts as spending.
+- **Charter changes** in your own words get the same explanation (what, why, alternatives, what it means)
+  before they are applied.
+- **Timings** per provider live in one place, the Budget of the example's charter.
+- **Skill text:** shorter descriptions, every skill loads `lab` first, cross-skill paths start at
+  `${CLAUDE_PLUGIN_ROOT}`, each fact is written once.
+- **Onboarding** checks for `uv` and `npx` and installs them only on a yes; Lightning AI uses the `.env` key;
+  `.gitignore` is touched only inside a git repository.
+- **Cloud names** come from the experiment folder's name, lowercased.
+- **Docs and evals:** the status-page picture is rendered from a synthetic `status.json` shaped like a Modal L4
+  quick start; the evals use only synthetic data and seed their own home; CI tests Python 3.10 and 3.12.
 
 ## 0.3.1 - 2026-10-01
 

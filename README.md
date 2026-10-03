@@ -2,15 +2,18 @@
 
 **Run ML experiments on free GPUs, from Claude Code.**
 
+[![CI](https://github.com/avshalomd/freelab/actions/workflows/ci.yml/badge.svg)](https://github.com/avshalomd/freelab/actions/workflows/ci.yml)
+
 freelab is a Claude Code plugin. Give your agent an experiment (fine-tune a model, run an evaluation, try to beat a
 baseline) and it plans it with you, runs it on the free tiers of Modal, Kaggle and Lightning AI or on your own
 machine, shows it on a live status page, and tells you plainly whether it worked.
 
-![The freelab status page during a quick-start run (sample data)](docs/status-page.png)
+![freelab's status page during a quick-start run on a Modal L4 (synthetic data)](docs/status-page.png)
 
 ## Install
 
-In Claude Code:
+In Claude Code 2.1.284 or later (the version CI checks), in the terminal or in the desktop app's chat box, type
+these two lines:
 
 ```
 /plugin marketplace add avshalomd/freelab
@@ -46,7 +49,7 @@ research loop.
 Say **"run the quick start"**. It fine-tunes [Laya](https://huggingface.co/convaiinnovations/laya), an open
 421M-parameter model, on [Banking77](https://huggingface.co/datasets/mteb/banking77) (77 bank-support intents):
 one run of about 10-17 minutes on a free GPU, target test accuracy 0.80, at most about USD 0.30 of free credit
-(free on Kaggle).
+(free on Kaggle). Afterwards "try to beat it" runs a short research loop, about 10-17 minutes on Modal's L4.
 
 | Where | Before training | After (3,076 test items, 95 % interval) |
 |---|---|---|
@@ -54,11 +57,13 @@ one run of about 10-17 minutes on a free GPU, target test accuracy 0.80, at most
 | Modal (L4) | 0.544 | 0.822 (0.808–0.835) |
 | Apple M4 Pro, 1 epoch | 0.544 | 0.767 (0.752–0.782) |
 
+One run per backend, one seed.
+
 Details, measured times and costs: [examples/banking77-laya](examples/banking77-laya/README.md).
 
 ## Free GPU time
 
-Checked late September 2026; plans change, so check each provider's page before a long run.
+Checked 28 September–2 October 2026; plans change, so check each provider's page before a long run.
 
 | Service | Free GPU time | Needs |
 |---|---|---|
@@ -72,10 +77,12 @@ Checked late September 2026; plans change, so check each provider's page before 
   placeholders, keeps `.env` in `.gitignore`, and never reads it. It loads `.env` into one command at a time.
 - **Money:** every launch has a logged cost estimate and a time cap first; spending beyond free credit or the
   agreed budget needs your approval.
-- **Hooks** back this up, only for freelab's own work: they block reading `.env` and the services' key files,
-  block a freelab training launch that has no budget or estimate, ask before deleting freelab's cloud data, and
-  remind the agent to write the report when a run ends. Your own commands, cloud jobs and git are left alone.
-  The hooks are an accident guard, not a sandbox.
+- **Hooks** back this up, only for freelab's own work: they block reading the project's `.env` and the
+  services' key files, block a freelab training launch that has no budget or estimate, ask before deleting
+  freelab's cloud data, and remind the agent to write the report when a run ends. They only check `.env` for
+  freelab's marker line and never print a line of it. They run on every tool call and exit at once in a project
+  that does not use freelab. Your own commands, cloud jobs and git are left alone. The hooks are an accident
+  guard, not a sandbox, and a session started in a folder above the project is not guarded.
 
 ## How it works
 
@@ -99,8 +106,9 @@ atomic checkpoints), so the same `train.py` runs on every backend and a preempte
 
 ## Status
 
-0.4.0. Verified live: full quick-start runs on Kaggle, Modal, Lightning AI and an Apple M4 Pro. Covered by unit
-tests but not yet run live: the 0.4.0 poll, hooks, cleanup script and research-loop worktree. Commands not yet
+0.4.1. Verified live: full quick-start runs on Kaggle, Modal and an Apple M4 Pro (the results above), and on
+Lightning AI for timing and cost (its accuracy was not recorded). Covered by unit tests but not yet run live: the
+poll, hooks, cleanup script and research-loop worktree added in 0.4.0. Commands not yet
 exercised live are marked "to verify live" in
 [`skills/compute/references/`](skills/compute/references/). Changes are in [CHANGELOG.md](CHANGELOG.md).
 
@@ -112,6 +120,7 @@ uv run --with pytest pytest -q
 
 ```bash
 claude plugin validate . --strict
+claude plugin validate .claude-plugin/plugin.json --strict
 ```
 
 Behaviour evals live in [`evals/`](evals/) (`claude plugin eval . --scaffold --allow-tools Bash Write Edit`). To
@@ -127,4 +136,5 @@ not affiliated with them). The research loop follows Andrej Karpathy's
 
 ## Licence
 
-MIT, see [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE). `examples/banking77-laya/laya_head.py` is Apache-2.0 (adapted from Laya), see
+[examples/banking77-laya/LICENSE-APACHE-2.0](examples/banking77-laya/LICENSE-APACHE-2.0).

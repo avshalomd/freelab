@@ -2,6 +2,7 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 jobs:
@@ -19,7 +20,7 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y zsh  # some tests run the scripts under zsh too
       - run: pip install pytest
       - run: pytest -q
-      - run: npm i -g @anthropic-ai/claude-code@2.1.284  # the version the plugin was last validated with
+      - run: npm i -g @anthropic-ai/claude-code@2.1.284  # pinned: the minimum Claude Code version the README names
         if: matrix.python-version == '3.12'
       - run: claude plugin validate . --strict  # the marketplace entry and plugin.json
         if: matrix.python-version == '3.12'
