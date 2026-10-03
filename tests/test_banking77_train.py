@@ -152,3 +152,14 @@ def test_bad_input_exits_2_before_any_model_or_data(train, tmp_path, monkeypatch
     with pytest.raises(SystemExit) as e:
         train.main()
     assert e.value.code == 2 and "--lr-scale must be a positive number" in capsys.readouterr().err
+
+
+def test_val_ids_sha_depends_on_the_ids_not_their_order(train):
+    rows = [{"id": "train-3"}, {"id": "train-10"}, {"id": "train-7"}]
+    sha = train.val_ids_sha(rows)
+    assert len(sha) == 16 and int(sha, 16) >= 0
+    assert train.val_ids_sha(list(reversed(rows))) == sha
+    assert train.val_ids_sha(rows[:2]) != sha
+    assert train.val_ids_sha([*rows[:2], {"id": "train-8"}]) != sha
+    import hashlib
+    assert sha == hashlib.sha256(b"train-10\ntrain-3\ntrain-7").hexdigest()[:16]

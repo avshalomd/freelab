@@ -1,9 +1,13 @@
-"""freelab quick start: fine-tune Laya on Banking77 (spec §7). Zero-shot evaluation, fine-tuning with cross-entropy
+"""freelab quick start: fine-tune Laya on Banking77. Zero-shot evaluation, fine-tuning with cross-entropy
 over the option markers, evaluation after each epoch; accuracy and ECE go to metrics.jsonl through runlib. A
 validation split (up to VAL_PER_CLASS unused training messages per intent, seeded with seed + 1) is scored at
 step 0 and after every epoch, and is what keep/discard decisions use. The test split is scored at step 0 (a
 seeded sample of ZERO_SHOT_ITEMS items) and once at the end (the whole official test split). The gain and the
-before/after ECE are measured on the zero-shot sample's items only, so both sides use the same items.
+before/after ECE are measured on the zero-shot sample's items only, so both sides use the same items. ECE uses
+Laya's shipped temperature for the option count (0.5 for all 77), before and after training: the trained model is
+not recalibrated. The framing (all-77 or 10-way) is chosen on the training sample, never on test items.
+summary.json also records val_ids_sha (a hash of the validation item ids, so a research loop can check that every
+experiment was judged on the same items), the torch and transformers versions and the device name.
 --smoke: 200 training items, 50 steps, 200 seeded test items (the split is sorted by intent) and SMOKE_VAL_ITEMS
 seeded validation items, all of them scored before and after, training only the top SMOKE_TOP_LAYERS layers. A
 step is one optimiser update (16 items).
@@ -14,14 +18,14 @@ ckpt/step-NNNNNNNN folder or its state.pt), then train --epochs N with a fresh o
 --out. The split, seeds and evaluation are unchanged, so step 0 scores the starting weights. --lr-scale X
 multiplies both learning rates. Both are flags a --resume must match; the run's own checkpoints hold every
 tensor that differs from the pinned download, so resuming it never reads PATH again.
---skip-test (a research loop's experiments, which decide on validation alone): no test item is scored, neither the
-step-0 sample nor the final pass, so the run is shorter and never sees the test split; summary.json then has no
-test fields. The best kept experiment is scored on test once, at the end, by a run without it.
+--skip-test (a research loop's experiments and Train longer rounds, which decide on validation alone): the test
+split is not loaded at all, so no test item is read or scored and the run is shorter; summary.json then has no
+test fields. The chosen run is scored on test once, at the end, by a rerun without it.
 Exit codes as in runlib, and 2 for bad input (an unavailable --device, --epochs below 1, a --lr-scale that is
 not a positive number, an --init-from that is missing, inside --out or not a matching train.py checkpoint, or
 --resume with different flags)."""
 from __future__ import annotations
-import argparse, json, math, os, random, sys, time
+import argparse, hashlib, json, math, os, platform, random, sys, time
 from pathlib import Path
 
 import torch  # before runlib.Run, so the allowance guard can cap torch's threads
@@ -61,11 +65,12 @@ def pick_device(name: str) -> torch.device:
     return torch.device(name)
 
 
-def load_rows():
+def load_rows(with_test: bool = True):
+    """(train rows, test rows, the 77 intent names); no test rows (an empty list) when with_test is False."""
     from datasets import load_dataset
     ds = load_dataset(DATASET, revision=DATASET_REVISION)
     train = [{"id": f"train-{i}", **r} for i, r in enumerate(ds["train"].to_list())]
-    test = [{"id": f"test-{i}", **r} for i, r in enumerate(ds["test"].to_list())]
+    test = [{"id": f"test-{i}", **r} for i, r in enumerate(ds["test"].to_list())] if with_test else []
     names = {r["label"]: r["label_text"].replace("_", " ") for r in train}
     return train, test, [names[i] for i in range(len(names))]
 
@@ -83,11 +88,12 @@ def encode(laya, rows, names, framing, seed):
     return out
 
 
-def choose_framing(laya, test, names, seed):
-    fit = sum(e[3] for e in encode(laya, test, names, "all", seed)) / len(test)
+def choose_framing(laya, rows, names, seed):
+    """All-77 when its whole sequence fits for 99 % of `rows` (the training sample: never test items)."""
+    fit = sum(e[3] for e in encode(laya, rows, names, "all", seed)) / len(rows)
     opt_tokens = sum(len(laya.option_ids(n)) + 1 for n in names)
-    why = (f"the all-77 sequence, no option cut, fits max_len {laya.max_len} for {fit:.1%} of test items (all-77 "
-           f"needs 99%); its option section is {opt_tokens} tokens, longer than laya's head budget of "
+    why = (f"the all-77 sequence, no option cut, fits max_len {laya.max_len} for {fit:.1%} of the training sample's "
+           f"items (all-77 needs 99%); its option section is {opt_tokens} tokens, longer than laya's head budget of "
            f"{laya.head_max_len}, which that budget would cut to 4 tokens per option")
     return ("all" if fit >= 0.99 else "10way"), why
 
@@ -115,6 +121,23 @@ def evaluate(laya, items, device, sample) -> dict:
     probs, gold = predict(laya, items, device)
     on_sample = score([probs[i] for i in sample], [gold[i] for i in sample])
     return {**score(probs, gold), "sample_accuracy": on_sample["accuracy"], "sample_ece": on_sample["ece"]}
+
+
+def val_ids_sha(rows) -> str:
+    """The first 16 hex digits of the sha256 of the sorted validation ids: equal hashes, the same validation items."""
+    return hashlib.sha256("\n".join(sorted(r["id"] for r in rows)).encode()).hexdigest()[:16]
+
+
+def environment(device) -> dict:
+    """The library versions and the device name, for summary.json (a result is read beside them)."""
+    from importlib import metadata
+    def version(pkg):
+        try:
+            return metadata.version(pkg)
+        except metadata.PackageNotFoundError:
+            return None
+    name = torch.cuda.get_device_name(device) if device.type == "cuda" else f"{device.type} ({platform.machine()})"
+    return {"torch": version("torch"), "transformers": version("transformers"), "device_name": name}
 
 
 def trainable(name: str, n_layers: int, top: int) -> bool:
@@ -262,12 +285,15 @@ def experiment(args, run, device) -> None:
     init = read_init(args.init_from) if args.init_from and not ckpt else None  # a resume uses its own checkpoint
     torch.manual_seed(args.seed)
     run.status("loading Banking77 and Laya")
-    train, test, names = load_rows()
+    train, test, names = load_rows(with_test=not args.skip_test)  # --skip-test: no test rows at all
     pool = train
+    # The split construction (these lines, VAL_PER_CLASS, --seed and --per-class) is frozen for a research loop:
+    # every experiment must be judged on the same validation items (val_ids_sha in summary.json).
     train = data.per_class_sample(pool, args.per_class, args.seed)
     val = data.holdout(pool, train, VAL_PER_CLASS, args.seed + 1)
     if args.smoke:
-        train, test = random.Random(args.seed).sample(train, 200), random.Random(args.seed).sample(test, 200)
+        train = random.Random(args.seed).sample(train, 200)
+        test = random.Random(args.seed).sample(test, 200) if test else []
         val = random.Random(args.seed).sample(val, SMOKE_VAL_ITEMS)
     laya = laya_head.Laya()
     n_layers = laya.model.encoder.config.num_hidden_layers
@@ -277,7 +303,7 @@ def experiment(args, run, device) -> None:
     if meta:
         framing, why = meta["framing"], meta["framing_reason"]
     elif args.framing == "auto":
-        framing, why = choose_framing(laya, test, names, args.seed)
+        framing, why = choose_framing(laya, train, names, args.seed)
     else:
         framing, why = args.framing, "set with --framing"
     train_items = encode(laya, train, names, framing, args.seed)
@@ -406,7 +432,8 @@ def experiment(args, run, device) -> None:
     # final_val_accuracy, final_val_ece and val_items: the validation split, scored at step 0 and every epoch.
     # With --init-from, "zero-shot" (step 0) means the starting weights, and the gain is over them.
     run.finish({"framing": framing, "framing_reason": why, **test_fields(zero, last, n_zero, len(test_items)),
-                "minutes": round(minutes(), 2), "device": device.type,
+                "minutes": round(minutes(), 2), "device": device.type, **environment(device),
+                "val_ids_sha": val_ids_sha(val),
                 "zero_shot_val_accuracy": zero_val.get("accuracy"), "final_val_accuracy": last_val.get("accuracy"),
                 "final_val_ece": last_val.get("ece"), "val_items": len(val_items), "init_from": flags["init_from"],
                 "lr_scale": args.lr_scale, "skip_test": args.skip_test})
