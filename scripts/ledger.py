@@ -2,9 +2,12 @@
 entry, `lab/ledger.jsonl`. `total()` sums the actuals where a run has any, and the estimates
 otherwise, per run."""
 from __future__ import annotations
-import argparse, json
+import argparse, json, sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from runlib import read_metrics  # noqa: E402  (any JSONL file: skips blank and torn lines)
 
 KINDS = ("estimate", "actual")
 
@@ -24,26 +27,14 @@ def add(lab, backend: str, run: str, usd: float, kind: str, note: str = "") -> d
     rec = {"t": _now(), "backend": backend, "run": run, "usd": usd, "kind": kind, "note": note}
     p = _path(lab)
     p.parent.mkdir(parents=True, exist_ok=True)
-    with p.open("a") as f:
+    with p.open("a", encoding="utf-8") as f:
         f.write(json.dumps(rec) + "\n")
     return rec
 
 
 def read_entries(lab) -> list[dict]:
     """Read ledger.jsonl, skipping blank and torn (incomplete) lines."""
-    out: list[dict] = []
-    p = _path(lab)
-    if not p.exists():
-        return out
-    for line in p.read_text().splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            out.append(json.loads(line))
-        except json.JSONDecodeError:
-            continue
-    return out
+    return read_metrics(_path(lab))
 
 
 def total(lab) -> float:

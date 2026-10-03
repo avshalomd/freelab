@@ -1,15 +1,20 @@
-"""freelab machine probe, local allowance store and placement (spec §1 G3b, §3, §4).
+"""freelab machine probe, local allowance store and placement (skills/onboard step 3 sets the allowance;
+skills/compute places and launches runs with it).
 
 Probes this machine's RAM/CPU/GPU, stores the user's day/night compute allowance in
 `$FREELAB_HOME/local.json` (default `~/.freelab`), and decides where a job with a given need should run.
 Cloud first: when a cloud backend is connected with free credit left (`--cloud-available`), the answer is
-cloud, unless the user asked for this machine (`--prefer local`). Otherwise: now (fits the day allowance),
-tonight (fits the night allowance), cloud (a connected free tier can take it), or ask (nothing fits, no cloud
-connected)."""
+cloud, unless the user asked for this machine (`--prefer local`); that answer needs no allowance. Otherwise: now
+(fits the day allowance), tonight (fits the night allowance, with night runs on and a night window set), cloud (a
+connected free tier can take it), or ask (nothing fits, no cloud connected)."""
 from __future__ import annotations
 import argparse, json, math, os, platform, subprocess, sys
+from typing import Callable
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from runlib import atomic_write  # noqa: E402
 
 DEFAULT_GPU = {"kind": "none", "name": None, "mem_gb": 0.0, "unified": False}
 
@@ -70,7 +75,8 @@ def _run(cmd: list[str]) -> str | None:
     """Run a probe command with a 10s timeout; None on any failure (missing tool, timeout,
     non-zero exit) so probe() never raises."""
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=10, check=True).stdout
+        return subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=10,
+                              check=True).stdout
     except (OSError, subprocess.SubprocessError):
         return None
 
@@ -109,7 +115,7 @@ def probe() -> dict:
         return parse_macos(mem, ncpu, brand, displays)
     if system == "Linux":
         try:
-            meminfo = Path("/proc/meminfo").read_text()
+            meminfo = Path("/proc/meminfo").read_text(encoding="utf-8", errors="replace")
         except OSError:
             meminfo = ""
         nvidia = _run(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"])
@@ -128,7 +134,7 @@ def load_allowance() -> dict:
     if not p.exists():
         raise FileNotFoundError("no local allowance yet: set it in the onboard skill, step 3 (resources.py set ...)")
     try:
-        doc = json.loads(p.read_text())
+        doc = json.loads(p.read_text(encoding="utf-8"))
     except json.JSONDecodeError as e:
         raise ValueError(f"corrupt allowance file at {p}: {e}") from e
     if not isinstance(doc, dict):
@@ -142,9 +148,7 @@ def save_allowance(doc: dict) -> Path:
     h = home()
     h.mkdir(parents=True, exist_ok=True)
     p = h / "local.json"
-    tmp = p.with_suffix(p.suffix + ".tmp")
-    tmp.write_text(json.dumps(doc, indent=2))
-    os.replace(tmp, p)
+    atomic_write(p, json.dumps(doc, indent=2))
     return p
 
 
@@ -207,11 +211,27 @@ def _describe(need: dict, day: dict, night: dict, unified: bool) -> str:
     return f"{needs}; {budgets}"
 
 
+def night_window(allowance: dict) -> tuple[str, str] | None:
+    """(start, end) of the allowance's night window, or None when it has none (missing, malformed or empty): then
+    nothing is placed tonight."""
+    nw = allowance.get("night_window")
+    if not isinstance(nw, dict):
+        return None
+    start, end = nw.get("start"), nw.get("end")
+    try:
+        if _parse_hhmm(str(start)) == _parse_hhmm(str(end)):
+            return None
+    except ValueError:
+        return None
+    return str(start), str(end)
+
+
 def place(need: dict, allowance: dict, now: datetime, cloud_available: bool,
           prefer: str = "cloud") -> dict:
     """Where a job runs. Cloud first: with a connected cloud backend (`cloud_available`) and prefer="cloud" (the
     default) it is "cloud". With prefer="local", or no cloud: "now" (fits the day allowance), "tonight" (fits the
-    night allowance), "cloud" (does not fit here, a cloud backend is connected) or "ask"."""
+    night allowance, only with night runs on and a night window), "cloud" (does not fit here, a cloud backend is
+    connected) or "ask"."""
     if prefer not in ("cloud", "local"):
         raise ValueError(f"prefer must be 'cloud' or 'local', got {prefer!r}")
     unified = bool(allowance.get("probe", {}).get("gpu", {}).get("unified"))
@@ -220,9 +240,10 @@ def place(need: dict, allowance: dict, now: datetime, cloud_available: bool,
     if cloud_available and prefer == "cloud":
         return {"place": "cloud", "why": "a cloud backend with free credit is connected (cloud first); " + why,
                 "nights": 0}
+    nights_ok = allowance.get("night_runs") is not False and night_window(allowance) is not None
     if _fits(need, day, unified):
         placement = "now"
-    elif _fits(need, night, unified):
+    elif nights_ok and _fits(need, night, unified):
         placement = "tonight"
     elif cloud_available:
         placement = "cloud"
@@ -230,8 +251,7 @@ def place(need: dict, allowance: dict, now: datetime, cloud_available: bool,
         placement = "ask"
     nights = 0
     if placement == "tonight":
-        nw = allowance.get("night_window", {})
-        s, e, _ = window(now, nw.get("start", "00:00"), nw.get("end", "00:00"))
+        s, e, _ = window(now, *night_window(allowance))
         window_hours = (e - s).total_seconds() / 3600
         nights = max(1, math.ceil(need.get("hours", 0) / window_hours)) if window_hours > 0 else 1
     return {"place": placement, "why": why, "nights": nights}
@@ -345,10 +365,28 @@ def _cli_set(args) -> int:
 
 
 def _cli_check(args) -> int:
-    allowance = load_allowance()
+    try:
+        allowance = load_allowance()
+    except FileNotFoundError:
+        if not (args.cloud_available and args.prefer == "cloud"):
+            raise
+        allowance = {}  # cloud first needs no local allowance: only a local placement does
     need = {"ram_gb": args.ram, "gpu_mem_gb": args.gpu_mem, "hours": args.hours}
     print(json.dumps(place(need, allowance, datetime.now(), bool(args.cloud_available), args.prefer), indent=2))
     return 0
+
+
+def _number(kind: Callable, minimum: float, strict: bool) -> Callable[[str], float]:
+    """An argparse type: `kind` (float or int) above `minimum` (strict) or at least it."""
+    def parse(text: str):
+        try:
+            value = kind(text)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"not a number: {text!r}") from None
+        if not math.isfinite(value) or (value <= minimum if strict else value < minimum):
+            raise argparse.ArgumentTypeError(f"must be {'above' if strict else 'at least'} {minimum:g}, got {text}")
+        return value
+    return parse
 
 
 def main() -> None:
@@ -364,17 +402,20 @@ def main() -> None:
     set_p.add_argument("--day-preset", choices=["low", "medium", "high"])
     set_p.add_argument("--night-preset", choices=["none", "partial", "full"])
     for period in ("day", "night"):
-        set_p.add_argument(f"--{period}-ram", type=float, help="GB of RAM (overrides the preset's value)")
-        set_p.add_argument(f"--{period}-gpu", type=float, help="GB of GPU memory (overrides the preset's value)")
-        set_p.add_argument(f"--{period}-threads", type=int, help="CPU threads (overrides the preset's value)")
+        set_p.add_argument(f"--{period}-ram", type=_number(float, 0, True),
+                           help="GB of RAM, above 0 (overrides the preset's value)")
+        set_p.add_argument(f"--{period}-gpu", type=_number(float, 0, False),
+                           help="GB of GPU memory, 0 for no GPU (overrides the preset's value)")
+        set_p.add_argument(f"--{period}-threads", type=_number(int, 1, False),
+                           help="CPU threads, at least 1 (overrides the preset's value)")
     set_p.add_argument("--start", required=True, help="night window start, HH:MM")
     set_p.add_argument("--end", required=True, help="night window end, HH:MM")
     set_p.add_argument("--idle-check", action="store_true", help=f"wait for {DEFAULT_IDLE_MINUTES} idle minutes")
     set_p.add_argument("--idle-minutes", type=int, help="idle minutes to wait for at night (implies --idle-check)")
     set_p.set_defaults(func=_cli_set)
 
-    check_p = sub.add_parser("check", help="place a job: cloud first when --cloud-available, else now / tonight / "
-                             "cloud / ask from its need vs. the allowance")
+    check_p = sub.add_parser("check", help="place a job: cloud first when --cloud-available (no allowance needed), "
+                             "else now / tonight / cloud / ask from its need vs. the allowance")
     check_p.add_argument("--ram", required=True, type=float)
     check_p.add_argument("--gpu-mem", required=True, type=float)
     check_p.add_argument("--hours", required=True, type=float)

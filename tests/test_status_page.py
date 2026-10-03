@@ -118,7 +118,7 @@ def test_main_renders_and_exits_0_with_non_numeric_metrics_row(tmp_path, monkeyp
     assert "<svg" in html
 
 
-@pytest.mark.parametrize("key, value", [("text", ""), ("metric", None), ("target", None), ("target", "0.8"),
+@pytest.mark.parametrize("key, value", [("text", ""), ("metric", None), ("target", "0.8"),
                                         ("target", float("nan"))])
 def test_validate_checks_the_goal(tmp_path, monkeypatch, capsys, key, value):
     doc = sp.new_status({**GOAL, key: value}, BUDGET)
@@ -857,3 +857,103 @@ def test_set_command_waits_for_the_poll_lock(tmp_path):
         fcntl.flock(lock, fcntl.LOCK_UN)
     assert proc.wait(timeout=20) == 0
     assert json.loads((lab / "status.json").read_text())["budget"]["usd_spent"] == 0.25
+
+
+# --- 0.4.1 ---------------------------------------------------------------------------------------
+
+NO_TARGET = {"text": "connection check", "metric": "accuracy", "target": None, "direction": "max"}
+
+
+def test_a_null_target_validates_and_renders_without_a_target(tmp_path):
+    doc = sp.new_status(NO_TARGET, {})
+    sp.validate(doc)
+    doc["runs"] = [{"id": "smoke", "backend": "modal", "state": "done", "step": 50, "total": 50, "metric": 0.7,
+                    "eta": None, "detail": "done", "started": "2026-10-01T10:00:00+00:00"}]
+    rows = [{"t": "x", "step": s, "total": 50, "split": sp_, "name": "accuracy", "value": 0.4 + s / 200}
+            for s in (0, 50) for sp_ in ("val", "test")]
+    rows += [{"t": "x", "step": s, "total": 50, "split": "train", "name": "loss", "value": 2 - s / 50}
+             for s in range(1, 51)]
+    write(tmp_path / "lab", doc, {"smoke": rows})
+    (tmp_path / "lab" / "results.tsv").write_text(
+        "id\tcommit\tbackend\tgpu\tminutes\tmetric\tstatus\tchange\nexp-1\tabc\tmodal\tL4\t5\t0.7\tkeep\tx\n")
+    html = sp.render(tmp_path / "lab")
+    assert "connection check" in html and "<svg" in html
+    assert "Progress to the target" not in html and "none set yet" in html
+    assert "Target (" not in html and not NAN.search(html)
+    assert sp.now_sentence(sp.new_status(NO_TARGET, {}), {}) == "Nothing has run yet."
+
+
+def test_set_goal_still_needs_a_numeric_target(tmp_path):
+    lab = tmp_path / "lab"
+    write(lab, sp.new_status(NO_TARGET, {}))
+    with pytest.raises(ValueError, match="goal.target"):
+        sp.set_key(lab, "goal", NO_TARGET)
+    sp.set_key(lab, "goal", GOAL)
+    assert json.loads((lab / "status.json").read_text())["goal"] == GOAL
+
+
+def _run(rid, state="starting"):
+    return {"id": rid, "backend": "modal", "state": state, "step": None, "total": None, "metric": None,
+            "eta": None, "detail": "", "started": "2026-10-01T10:00:00+00:00"}
+
+
+def test_forget_removes_one_run_entry(tmp_path, capsys):
+    lab = tmp_path / "lab"
+    doc = sp.new_status(GOAL, BUDGET)
+    doc["runs"] = [_run("typo"), _run("real", "running")]
+    write(lab, doc)
+    sp.main(["forget", "--lab", str(lab), "typo"])
+    assert [r["id"] for r in json.loads((lab / "status.json").read_text())["runs"]] == ["real"]
+    assert (lab / "status.html").is_file()
+    with pytest.raises(SystemExit) as e: sp.main(["forget", "--lab", str(lab), "typo"])
+    assert e.value.code == 2 and "no run 'typo'" in capsys.readouterr().err
+
+
+def test_a_render_failure_writes_nothing(tmp_path, monkeypatch, capsys):
+    lab = tmp_path / "lab"
+    write(lab, sp.new_status(GOAL, BUDGET))
+    before = (lab / "status.json").read_text()
+
+    def boom(*a, **k):
+        raise ValueError("cannot render")
+    monkeypatch.setattr(sp, "render", boom)
+    with pytest.raises(SystemExit) as e: sp.main(["event", "--lab", str(lab), "hello"])
+    assert e.value.code == 2 and "cannot render" in capsys.readouterr().err
+    assert (lab / "status.json").read_text() == before and not (lab / "status.html").exists()
+
+
+def test_cli_render_takes_the_status_lock(tmp_path, monkeypatch):
+    lab = tmp_path / "lab"
+    write(lab, sp.new_status(GOAL, BUDGET))
+    taken = []
+    real = sp.status_lock
+
+    def recording(path):
+        taken.append(path)
+        return real(path)
+    monkeypatch.setattr(sp, "status_lock", recording)
+    sp.main([str(lab)])
+    assert taken and (lab / "status.html").is_file()
+
+
+def test_help_lists_every_form(capsys):
+    with pytest.raises(SystemExit): sp.main(["--help"])
+    out = capsys.readouterr().out
+    for form in ("event --lab LAB", "set --lab LAB KEY JSON", "forget --lab LAB RUN_ID", "writes nothing"):
+        assert form in out
+
+
+def test_render_writes_utf8_under_an_ascii_locale(tmp_path):
+    import os, subprocess, sys
+    from pathlib import Path
+    lab = tmp_path / "lab"
+    write(lab, sp.new_status({**GOAL, "text": "Café routing ✓"}, BUDGET))
+    env = {**os.environ, "LC_ALL": "C", "LANG": "C", "PYTHONUTF8": "0", "PYTHONCOERCECLOCALE": "0"}
+    probe = subprocess.run([sys.executable, "-c", "import locale; print(locale.getpreferredencoding(False))"],
+                           env=env, capture_output=True, text=True).stdout.strip().lower()
+    if "utf" in probe:
+        pytest.skip("this Python always uses UTF-8")
+    script = Path(sp.__file__).resolve()
+    res = subprocess.run([sys.executable, str(script), str(lab)], env=env, capture_output=True)
+    assert res.returncode == 0, res.stderr
+    assert "Café routing ✓" in (lab / "status.html").read_text(encoding="utf-8")

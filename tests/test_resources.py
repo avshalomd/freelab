@@ -247,3 +247,53 @@ def test_no_allowance_points_to_onboard_step_3(monkeypatch, capsys):
     with pytest.raises(SystemExit) as e: r.main()
     err = capsys.readouterr().err
     assert e.value.code == 2 and "onboard skill, step 3" in err and "compute skill" not in err
+
+
+# --- 0.4.1: cloud needs no allowance, a missing night window, positive numbers --------------------
+
+def _check_code(monkeypatch, capsys, *extra):
+    monkeypatch.setattr("sys.argv", ["resources.py", "check", "--ram", "4", "--gpu-mem", "2", "--hours", "1", *extra])
+    with pytest.raises(SystemExit) as e: r.main()
+    return e.value.code, capsys.readouterr()
+
+
+def test_check_cloud_available_needs_no_allowance(monkeypatch, capsys):
+    code, out = _check_code(monkeypatch, capsys, "--cloud-available")
+    assert code == 0 and json.loads(out.out)["place"] == "cloud"
+    code, out = _check_code(monkeypatch, capsys, "--cloud-available", "--prefer", "local")
+    assert code == 2 and "onboard skill, step 3" in out.err   # a local placement still needs the allowance
+
+
+@pytest.mark.parametrize("nw", [None, {}, {"start": "23:00"}, {"start": "23:00", "end": "23:00"}, "x"])
+def test_no_night_window_means_never_tonight(nw):
+    allow = {k: v for k, v in ALLOW.items() if k != "night_window"}
+    if nw is not None:
+        allow["night_window"] = nw
+    need = {"ram_gb": 10, "gpu_mem_gb": 6, "hours": 2}   # fits only the night allowance
+    assert r.place(need, allow, NOW, False)["place"] == "ask"
+    assert r.place(need, allow, NOW, True, prefer="local")["place"] == "cloud"
+    assert r.place({"ram_gb": 4, "gpu_mem_gb": 2, "hours": 1}, allow, NOW, False)["place"] == "now"
+
+
+def test_check_cli_with_an_allowance_lacking_a_night_window(monkeypatch, capsys):
+    r.home().mkdir(parents=True, exist_ok=True)
+    (r.home() / "local.json").write_text(json.dumps({k: v for k, v in ALLOW.items() if k != "night_window"}))
+    code, out = _check_code(monkeypatch, capsys, "--prefer", "local")
+    assert code == 0 and json.loads(out.out)["place"] == "now"
+
+
+def test_night_runs_off_means_never_tonight():
+    allow = dict(ALLOW, night_runs=False)
+    assert r.place({"ram_gb": 10, "gpu_mem_gb": 6, "hours": 2}, allow, NOW, False)["place"] == "ask"
+
+
+@pytest.mark.parametrize("bad", [["--day-ram", "0"], ["--day-ram", "-1"], ["--night-threads", "0"],
+                                 ["--day-gpu", "-2"], ["--day-ram", "nan"]])
+def test_set_rejects_zero_or_negative_values(monkeypatch, bad):
+    assert run_set(monkeypatch, "--day-preset", "low", "--night-preset", "full", *bad) == 2
+    assert not (r.home() / "local.json").exists()
+
+
+def test_set_accepts_a_gpu_of_zero(monkeypatch):
+    assert run_set(monkeypatch, "--day-preset", "low", "--day-gpu", "0", "--night-preset", "full") == 0
+    assert r.load_allowance()["day"]["gpu_mem_gb"] == 0

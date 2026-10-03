@@ -132,8 +132,9 @@ def test_running_run_keeps_pycache(proj):
     ("lab/runs/exp-02", "scope"),
     ("lab/charter.md", "scope"),
     ("lab/backends/modal_app.py", "scope"),
-    ("../elsewhere/ckpt", "relative"),
-    ("/tmp/x/lab/runs/exp-02/ckpt", "relative"),
+    ("../elsewhere/ckpt", "'..'"),
+    ("lab/runs/../runs/exp-02/ckpt", "'..'"),
+    ("/tmp/x/lab/runs/exp-02/ckpt", "outside"),
     ("src/model.py", "outside"),
     ("lab/runs/exp-09/ckpt", "not listed"),
     ("lab/runs/exp-03/ckpt", "resumable"),
@@ -293,3 +294,32 @@ def test_size_bytes_falls_back_to_the_file_size_without_st_blocks(tmp_path, monk
     dirs = real(tmp_path / "d").st_size + real(tmp_path / "d" / "sub").st_size
     assert cleanup.size_bytes(tmp_path / "d") == -(-(3100 + dirs) // 1024) * 1024
     assert cleanup.size_bytes(tmp_path / "d" / "a.bin") == 3072
+
+
+# --- 0.4.1 ---------------------------------------------------------------------------------------
+
+def test_an_absolute_lab_takes_absolute_and_relative_paths(proj):
+    lab = str((proj / "lab").resolve())
+    r = cli("remove", "--lab", lab, f"{lab}/runs/exp-02/ckpt", "lab/runs/exp-04/ckpt")
+    assert r.returncode == 0, r.stderr
+    assert not (proj / "lab" / "runs" / "exp-02" / "ckpt").exists()
+    assert not (proj / "lab" / "runs" / "exp-04" / "ckpt").exists()
+    r = cli("remove", "--lab", lab, f"{lab}/charter.md")
+    assert r.returncode == 1 and "scope" in r.stderr
+
+
+def test_a_folder_of_a_run_that_never_launched_has_ended(proj):
+    (proj / "lab" / "runs" / "typo").mkdir()
+    (proj / "lab" / "runs" / "typo" / ".poll.json").write_text("{}")
+    runs = {r["id"]: r["class"] for r in inv()["runs"]}
+    assert runs["typo"] == "ended"
+    doc = json.loads((proj / "lab" / "status.json").read_text())
+    doc["runs"].append({"id": "typo", "state": "stopped"})       # known to status.json: still in doubt
+    (proj / "lab" / "status.json").write_text(json.dumps(doc))
+    assert {r["id"]: r["class"] for r in inv()["runs"]}["typo"] == "running"
+
+
+def test_a_run_with_a_live_launcher_is_running(proj):
+    import os
+    (proj / "lab" / "runs" / "exp-03" / ".launcher").write_text(str(os.getpid()))
+    assert {r["id"]: r["class"] for r in inv()["runs"]}["exp-03"] == "running"

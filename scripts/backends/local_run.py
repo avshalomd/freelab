@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
-"""freelab local launcher: run an experiment on this machine within the user's allowance (spec §5 rule 6, §6,
-§8 rule 8). `--when now` starts at once under the day allowance. `--when night` waits for the night window (and for
-the allowance's idle_minutes, 15 by default, if idle_check is set), runs under the night allowance with --max-minutes
-ending before the window closes, and resumes on the next night, up to --nights; it refuses when the allowance has
-night_runs false. One local run at a time holds FREELAB_HOME/local-run.lock. The lock is
-taken at launch (after any wait), so a sleeping night run never blocks a daytime one. A --max-minutes among the
-experiment args is capped at the window's. A GPU allowance of 0 hides a CUDA GPU (CUDA_VISIBLE_DEVICES="") and sets no
-MPS limits; otherwise the MPS watermark is min(gpu_mem_gb, ram_gb) / (0.75 * machine RAM), capped at 1.0: torch
-applies the ratio to Metal's recommended working set, about 75 % of RAM, so the cap lands near that many GB. MPS memory
-is not in the process RSS, so on Apple Silicon the watermark, not runlib's RSS guard, caps the GPU share. Exit codes:
-the child's (0 done, 1 failed, 3 stopped and resumable); 2 for bad input, no allowance or a held lock; 3 when the night
-window closes before anything started. Standard library only."""
+"""freelab local launcher: run an experiment on this machine within the user's allowance (skills/compute/references/
+local.md; the allowance comes from skills/onboard step 3). `--when now` starts at once under the day allowance.
+`--when night` waits for the night window (and for the allowance's idle_minutes, 15 by default, if idle_check is
+set), runs under the night allowance with --max-minutes ending before the window closes, and resumes on the next
+night, up to --nights; it refuses when the allowance has night_runs false or no night window. One local run at a
+time holds FREELAB_HOME/local-run.lock. The lock is taken at launch (after any wait), so a sleeping night run never
+blocks a daytime one. One launcher per run id: it holds lab/runs/ID/.launcher (its pid) from start to end, also
+while it waits between nights, and a second launch of the same id is refused while that pid is alive
+(scripts/poll.py reads it too: a run stopped at a night window's end while its launcher waits shows as waiting, not
+stopped). A --max-minutes among the experiment args must have a number and is capped at the window's. A GPU
+allowance of 0 hides a CUDA GPU (CUDA_VISIBLE_DEVICES="") and sets no MPS limits; otherwise the MPS watermark is
+min(gpu_mem_gb, ram_gb) / (0.75 * machine RAM), capped at 1.0: torch applies the ratio to Metal's recommended
+working set, about 75 % of RAM, so the cap lands near that many GB. MPS memory is not in the process RSS, so on
+Apple Silicon the watermark, not runlib's RSS guard, caps the GPU share. Exit codes: the child's (0 done, 1 failed,
+3 stopped and resumable); 2 for bad input, no allowance, a held lock or another live launcher of the same run; 3
+when the night window closes before anything started. Standard library only."""
 from __future__ import annotations
 import argparse, json, os, platform, re, shutil, signal, subprocess, sys, time
 from datetime import datetime
@@ -42,8 +46,7 @@ def build_env(allowance_part: dict, probe: dict, base_env: dict) -> dict:
     threads = str(int(allowance_part.get("cpu_threads", 1)))
     env.update({"FREELAB_MAX_RAM_GB": f"{float(allowance_part.get('ram_gb', 0)):g}",
                 "FREELAB_GPU_MEM_GB": f"{float(allowance_part.get('gpu_mem_gb', 0)):g}",
-                "FREELAB_THREADS": threads, "FREELAB_MACHINE_RAM_GB": f"{float(probe.get('ram_gb', 0)):g}",
-                "OMP_NUM_THREADS": threads, "MKL_NUM_THREADS": threads})
+                "FREELAB_THREADS": threads, "OMP_NUM_THREADS": threads, "MKL_NUM_THREADS": threads})
     kind, gpu_mem = probe.get("gpu", {}).get("kind"), float(allowance_part.get("gpu_mem_gb", 0))
     if kind == "cuda" and gpu_mem == 0:
         env["CUDA_VISIBLE_DEVICES"] = ""  # an allowance of 0 means "no GPU": hide it rather than cap it at 0 bytes
@@ -69,7 +72,7 @@ class Lock:
 
     def __enter__(self) -> "Lock":
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.f = open(self.path, "a+")
+        self.f = open(self.path, "a+", encoding="utf-8")
         try:
             if os.name == "nt":
                 import msvcrt
@@ -94,7 +97,8 @@ class Lock:
 def idle_seconds() -> float | None:
     """Seconds since the last keyboard/mouse input on macOS (HIDIdleTime), or None if it cannot be read."""
     try:
-        out = subprocess.run(["ioreg", "-c", "IOHIDSystem"], capture_output=True, text=True, timeout=10).stdout
+        out = subprocess.run(["ioreg", "-c", "IOHIDSystem"], capture_output=True, encoding="utf-8", errors="replace",
+                             timeout=10).stdout
         return int(next(l for l in out.splitlines() if "HIDIdleTime" in l).split()[-1]) / 1e9
     except (OSError, subprocess.SubprocessError, StopIteration, ValueError):
         return None
@@ -125,12 +129,12 @@ def _sleep_until(t: datetime) -> None:
 
 def _cap_minutes(max_minutes: int | None, extra: list[str]) -> tuple[float | None, list[str]]:
     """With a window deadline, fold a --max-minutes from the experiment args into it (the smaller wins, 0 = none);
-    without one, leave the experiment args untouched."""
-    if max_minutes is None:
-        return None, extra
+    without one, leave the experiment args untouched. Either way a --max-minutes without a number is refused."""
     rest, user, i = [], None, 0
     while i < len(extra):
-        if extra[i] == "--max-minutes" and i + 1 < len(extra):
+        if extra[i] == "--max-minutes":
+            if i + 1 >= len(extra):
+                raise _Usage("--max-minutes at the end of the experiment args has no value")
             user, i = extra[i + 1], i + 2
         elif extra[i].startswith("--max-minutes="):
             user, i = extra[i].split("=", 1)[1], i + 1
@@ -140,6 +144,8 @@ def _cap_minutes(max_minutes: int | None, extra: list[str]) -> tuple[float | Non
         user_minutes = float(user) if user is not None else 0.0
     except ValueError:
         raise _Usage(f"--max-minutes {user!r} in the experiment args is not a number") from None
+    if max_minutes is None:
+        return None, extra
     return (min(user_minutes, max_minutes) if user_minutes > 0 else max_minutes), rest
 
 
@@ -172,7 +178,7 @@ class _Child:
         self.proc.send_signal(sig)
 
     def run(self, cmd: list[str], cwd: Path, env: dict, log_path: Path) -> int:
-        with open(log_path, "a") as log:
+        with open(log_path, "a", encoding="utf-8") as log:
             log.write(f"--- freelab local_run {_now().isoformat(timespec='seconds')}: {' '.join(cmd)}\n")
             log.flush()
             self.proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=log, stderr=subprocess.STDOUT)
@@ -204,7 +210,7 @@ def _allowance_part(allowance: dict, a) -> tuple[dict, dict | None]:
 
 def _deadline_hit(run_dir: Path) -> bool:
     try:
-        return (run_dir / "status.txt").read_text().strip() == "stopped (deadline)"
+        return (run_dir / "status.txt").read_text(encoding="utf-8", errors="replace").strip() == "stopped (deadline)"
     except OSError:
         return False
 
@@ -223,26 +229,62 @@ def _launch(a, extra: list[str]) -> int:
             raise _Usage("night runs are turned off in the allowance, so nothing runs at night. Use --when now, or "
                          "turn night runs on with resources.py set --night-preset partial or full.")
         part, raised = _allowance_part(allowance, a)
-        nw = allowance.get("night_window", {})
-        win = resources.window(_now(), nw.get("start", ""), nw.get("end", "")) if a.when == "night" else None
+        nw = resources.night_window(allowance) if a.when == "night" else None
+        if a.when == "night" and nw is None:
+            raise _Usage("the allowance has no night window: set one with resources.py set --start HH:MM --end HH:MM")
     except (FileNotFoundError, ValueError, KeyError) as e:
         raise _Usage(str(e) if not isinstance(e, KeyError) else f"the allowance file has no {e} entry") from None
     probe = allowance.get("probe", {})
     run_dir = Path(a.lab).resolve() / "runs" / a.run_id
-    max_minutes = int(deadline_minutes(_now() if win[2] else win[0], win[1])) if win else None
     if a.dry_run:
+        win = resources.window(_now(), *nw) if nw else None
+        max_minutes = int(deadline_minutes(_now() if win[2] else win[0], win[1])) if win else None
         window = [win[0].isoformat(timespec="minutes"), win[1].isoformat(timespec="minutes")] if win else None
         minutes, rest = _cap_minutes(max_minutes, extra)
         print(json.dumps({"cmd": build_cmd(exp, run_dir, minutes, rest), "env": build_env(part, probe, {}),
                           "max_minutes": minutes, "when": a.when, "window": window}, indent=2))
         return 0
+    _cap_minutes(None, extra)  # a bad --max-minutes fails now, not after waiting for the night
+    with _Launcher(run_dir, a.run_id):
+        return _run_nights(a, exp, run_dir, extra, allowance, part, raised, probe, nw)
 
+
+class _Launcher:
+    """Hold lab/runs/ID/.launcher (this process's pid) while this launcher lives; refuse when another live
+    launcher holds it for the same run id."""
+
+    def __init__(self, run_dir: Path, run_id: str):
+        self.path, self.run_id = run_dir / runlib.LAUNCHER_MARKER, run_id
+
+    def __enter__(self) -> "_Launcher":
+        if runlib.launcher_alive(self.path.parent):
+            pid = self.path.read_text(encoding="utf-8").strip()
+            raise _Usage(f"run {self.run_id} already has a launcher (pid {pid}), waiting for its night window or "
+                         "running: wait for it, or stop it first")
+        self.made_dir = not self.path.parent.exists()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        runlib.atomic_write(self.path, f"{os.getpid()}\n")
+        return self
+
+    def __exit__(self, *exc) -> None:
+        try:
+            if self.path.read_text(encoding="utf-8").split()[0] == str(os.getpid()):
+                self.path.unlink()
+            if self.made_dir and not any(self.path.parent.iterdir()):
+                self.path.parent.rmdir()  # nothing ran (the night window closed first): leave no empty run folder
+        except (OSError, IndexError):
+            pass
+
+
+def _run_nights(a, exp: Path, run_dir: Path, extra: list[str], allowance: dict, part: dict, raised, probe: dict,
+                nw) -> int:
+    """Run now, or on up to --nights night windows (resuming each night after the first)."""
     env, lock = build_env(part, probe, dict(os.environ)), resources.home() / "local-run.lock"
-    not_before, code = _now(), 1
+    not_before, code, max_minutes = _now(), 1, None
     with _Child() as child:
         for night in range(1, a.nights + 1):
             if a.when == "night":
-                start, end, _ = resources.window(max(_now(), not_before), nw["start"], nw["end"])
+                start, end, _ = resources.window(max(_now(), not_before), *nw)
                 if start > _now():
                     print(f"waiting for the night window: {start:%Y-%m-%d %H:%M} to {end:%H:%M}", flush=True)
                     _sleep_until(start)
@@ -263,10 +305,10 @@ def _launch(a, extra: list[str]) -> int:
                     if night == 1:
                         config = {"run_id": a.run_id, "when": a.when, "allowance": part, "raised": raised, "cmd": cmd,
                                   "started": _now().astimezone().isoformat(timespec="seconds")}
-                        (run_dir / "config.json").write_text(json.dumps(config, indent=2) + "\n")
+                        runlib.atomic_write(run_dir / "config.json", json.dumps(config, indent=2) + "\n")
                     code = child.run(cmd, exp, env, run_dir / "log.txt")
             except BlockingIOError:
-                other = lock.read_text().strip() if lock.exists() else ""
+                other = lock.read_text(encoding="utf-8", errors="replace").strip() if lock.exists() else ""
                 raise _Usage(f"another local run is active{f' (run {other})' if other else ''}: the lock {lock} "
                              "is held. Wait for it to finish, or stop it first.") from None
             if not (code == 3 and night < a.nights and not child.signalled and _deadline_hit(run_dir)):
@@ -286,7 +328,9 @@ def main() -> None:
     p.add_argument("--raise-ram", type=float, help="this run's RAM limit in GB (at least the allowance)")
     p.add_argument("--raise-gpu", type=float, help="this run's GPU memory limit in GB (at least the allowance)")
     p.add_argument("--raise-threads", type=int, help="this run's CPU thread limit (at least the allowance)")
-    p.add_argument("--nights", type=int, default=1, help="with --when night: resume on up to this many nights")
+    p.add_argument("--nights", type=int, default=1,
+                   help="with --when night: resume on up to this many nights. Between nights this launcher sleeps "
+                        "and keeps lab/runs/ID/.launcher; the poll shows the run as waiting and keeps watching")
     p.add_argument("--dry-run", action="store_true", help="print the command and freelab's variables, run nothing")
     args = p.parse_args(own)
     try:

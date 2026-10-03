@@ -2,9 +2,11 @@
 
     python3 scripts/poll.py BACKEND RUN_ID [--lab lab] [--expected-minutes M] [--every SECONDS] [--once]
                             [--link URL] [--max-hours H] [--run-dir DIR] [--kernel OWNER/SLUG]
-                            [--teamspace ORG/TEAMSPACE] [--job NAME]
+                            [--teamspace ORG/TEAMSPACE] [--job NAME] [--goal TEXT]
 
-BACKEND is modal, kaggle, lightning or local. Meant for Bash run_in_background, from the project root. Each tick:
+BACKEND is modal, kaggle, lightning or local. Meant for Bash run_in_background, from the project root. Without
+lab/status.json (onboarding's connection check, before any charter) it starts a minimal one: goal text --goal
+(default "connection check"), metric accuracy, no target; the plan skill later sets the real goal. Each tick:
 1. fetch the run's small files (status.txt, metrics.jsonl, summary.json) into lab/runs/ID/ with the backend's own
    CLI, through scripts/withenv (which loads ./.env for that command only). A failed or empty download keeps the
    last good copy: each file lands in a temporary folder and replaces the old one only when it is not empty (and,
@@ -17,7 +19,13 @@ BACKEND is modal, kaggle, lightning or local. Meant for Bash run_in_background, 
    one), then sleep for the cadence.
 When the run is done, failed or stopped it prints `final: <state> step=<s>/<t> val=<v>` and exits 0 (done),
 3 (stopped) or 1 (failed, or an error: giving up after --max-hours, or after 10 checks in a row that could not
-update status.json).
+update status.json). A run the provider says ended but whose result files could not be fetched after 5 checks is
+failed ("ended, but the results could not be fetched: fetch them by hand"), exit 1.
+--once checks once and prints `now: <state> ...` (exit 0); it records nothing for a run nobody knows yet (not in
+status.json, no files, the provider does not know it: a typo'd id, or a run launched seconds ago) and exits 1.
+A local run paused between nights (`local_run.py --when night --nights N`: status `stopped (deadline)` while its
+launcher still waits for the next night window) shows as waiting, and the poll keeps watching; --max-hours then
+counts from the latest resume. `status_page.py forget --lab LAB RUN_ID` removes a run's entry.
 
 Cadence (--every overrides): 30 s in the first 5 minutes after the run started; then by the expected length
 (--expected-minutes, else the run's expected_minutes in status.json): under 30 min every 30 s, up to 3 h every
@@ -53,6 +61,9 @@ EARLY_SECONDS = 5 * 60
 CMD_TIMEOUT = 120
 STREAM_RESTARTS = 3     # Kaggle: the live log stream is started once and restarted up to this many times
 FETCH_TRIES = 5         # ticks to wait for the final files after the provider says the run ended
+ETA_WINDOW = 20         # the ETA's rate comes from at most this many of the latest training rows
+ETA_GAP_SECONDS = 60    # a gap between training rows longer than this (and 5x the usual one) is a pause: a resume
+DEFAULT_GOAL = "connection check"
 FAIL_NOTE_AFTER = 3     # consecutive ticks with every command failing before a note on stderr
 MAX_TICK_ERRORS = 10    # consecutive ticks that could not update status.json before the poll gives up (exit 1)
 RUN_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")  # as scripts/backends/local_run.py
@@ -85,15 +96,12 @@ def _parse_time(text) -> datetime | None:
     return when if when.tzinfo else when.replace(tzinfo=timezone.utc)
 
 
-def _atomic_write(path: Path, text: str) -> None:
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(text)
-    os.replace(tmp, path)
+_atomic_write = runlib.atomic_write
 
 
 def _read_json(path: Path, default):
     try:
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return default
 
@@ -135,7 +143,7 @@ def _fmt(value: float, percent: bool) -> str:
 def _status_line(path: Path) -> str:
     """The first meaningful line of status.txt ("" when missing); a CLI's own "✓ ..." line is skipped."""
     try:
-        lines = path.read_text(errors="replace").splitlines()
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
         return ""
     return next((l.strip() for l in lines if l.strip() and not l.lstrip().startswith("✓")), "")
@@ -236,7 +244,8 @@ def _run(cmd: list[str], cwd: Path, timeout: int = CMD_TIMEOUT) -> subprocess.Co
     """Run a backend command through withenv from the project root; None when it could not run or timed out.
     Its output is captured, never printed."""
     try:
-        return subprocess.run([_withenv(), *cmd], cwd=cwd, capture_output=True, text=True, timeout=timeout)
+        return subprocess.run([_withenv(), *cmd], cwd=cwd, capture_output=True, encoding="utf-8", errors="replace",
+                              timeout=timeout)
     except (OSError, subprocess.SubprocessError):
         return None
 
@@ -262,8 +271,8 @@ def _stream_alive(pid) -> bool:
     except (OSError, ProcessLookupError):
         return False
     try:
-        out = subprocess.run(["ps", "-o", "stat=,command=", "-p", str(pid)], capture_output=True, text=True,
-                             timeout=10).stdout.strip()
+        out = subprocess.run(["ps", "-o", "stat=,command=", "-p", str(pid)], capture_output=True, encoding="utf-8",
+                             errors="replace", timeout=10).stdout.strip()
     except (OSError, subprocess.SubprocessError):
         return True
     return bool(out) and not out.startswith("Z") and "logs" in out
@@ -292,6 +301,7 @@ class Backend:
         self.last_error = ""
         self.progress: dict | None = None   # a live log's newest progress line
         self.log_evals: list[dict] = []     # a live log's validation checks
+        self.known = False                  # the provider knows this run (its status or app answered)
 
     def default_link(self) -> str | None:
         return None
@@ -365,12 +375,13 @@ class Modal(Backend):
         except ValueError:
             return None
         app = next((a for a in apps if isinstance(a, dict) and a.get("app_id") == m.group(1)), None)
+        self.known = self.known or app is not None
         return "error" if app and str(app.get("state", "")).lower() == "stopped" else None
 
 
-def kaggle_ref(root: Path, run_id: str) -> str | None:
-    """OWNER/SLUG from lab/backends/kaggle-ID/kernel-metadata.json (written at launch), or None."""
-    meta = _read_json(Path(root) / "lab" / "backends" / f"kaggle-{run_id}" / "kernel-metadata.json", {})
+def kaggle_ref(lab: Path, run_id: str) -> str | None:
+    """OWNER/SLUG from LAB/backends/kaggle-ID/kernel-metadata.json (written at launch), or None."""
+    meta = _read_json(Path(lab) / "backends" / f"kaggle-{run_id}" / "kernel-metadata.json", {})
     ref = meta.get("id") if isinstance(meta, dict) else None
     return ref if isinstance(ref, str) and re.fullmatch(r"[\w.-]+/[\w.-]+", ref) else None
 
@@ -380,7 +391,7 @@ class Kaggle(Backend):
 
     def __init__(self, *a):
         super().__init__(*a)
-        self.ref = self.args.kernel or kaggle_ref(self.root, self.run_id)
+        self.ref = self.args.kernel or kaggle_ref(Path(self.args.lab).resolve(), self.run_id)
 
     def default_link(self) -> str | None:
         return f"https://www.kaggle.com/code/{self.ref}" if self.ref else None
@@ -388,6 +399,7 @@ class Kaggle(Backend):
     def fetch(self) -> str | None:
         res = self.cmd(["kaggle", "kernels", "status", self.ref])
         state = kaggle_state(res.stdout) if res is not None and res.returncode == 0 else None
+        self.known = self.known or state is not None
         if state == "running":
             self._ensure_stream()
         if state in ("complete", "error", "cancelled"):
@@ -441,6 +453,7 @@ class Lightning(Backend):
     def fetch(self) -> str | None:
         res = self.cmd(["lightning", "job", "inspect", self.job, "--teamspace", self.teamspace])
         state = lightning_state(res.stdout) if res is not None and res.returncode == 0 else None
+        self.known = self.known or state is not None
         tmp = self.tmp_dir()
         for name in SMALL_FILES:  # status first, as on Modal
             src = f"lit://{self.teamspace}/jobs/{self.job}/freelab-runs/{self.run_id}/{name}"
@@ -471,7 +484,8 @@ def _latest_val(rows: list, metric: str) -> list[dict]:
 
 
 def _progress_rows(rows: list) -> tuple:
-    """(step, total, rate in steps per second or None) from the train and val rows."""
+    """(step, total, rate in steps per second or None) from the train and val rows. The rate comes from the latest
+    ETA_WINDOW training rows, after the longest gap among them when that gap is a pause (a resume)."""
     pts = [r for r in rows if isinstance(r, dict) and r.get("split") in ("train", "val")
            and sp._finite_number(r.get("step"))]
     if not pts:
@@ -480,7 +494,14 @@ def _progress_rows(rows: list) -> tuple:
     total = last.get("total") if sp._finite_number(last.get("total")) else None
     train = [(r["step"], _parse_time(r.get("t"))) for r in rows if isinstance(r, dict) and r.get("split") == "train"
              and sp._finite_number(r.get("step"))]
-    train = [(s, t) for s, t in train if t is not None]
+    train = [(s, t) for s, t in train if t is not None][-ETA_WINDOW:]
+    # a resume after a pause (another session, the next night) leaves one long gap: the rate counts only after it
+    gaps = [(train[i + 1][1] - train[i][1]).total_seconds() for i in range(len(train) - 1)]
+    if len(gaps) >= 2:
+        i = max(range(len(gaps)), key=gaps.__getitem__)
+        usual = sorted(g for j, g in enumerate(gaps) if j != i)[(len(gaps) - 1) // 2]
+        if gaps[i] > ETA_GAP_SECONDS and gaps[i] > 5 * max(usual, 0.0):
+            train = train[i + 1:]
     rate = None
     if len(train) >= 2:
         (s0, t0), (s1, t1) = train[0], train[-1]
@@ -496,6 +517,7 @@ class Poller:
         self.root = self.lab.parent
         self.run_id = args.run_id
         self.run_dir = Path(args.run_dir).resolve() if args.run_dir else self.lab / "runs" / self.run_id
+        self.new_dir = not self.run_dir.exists()  # a --once check removes it again for a run nobody knows
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.memo_path = self.run_dir / ".poll.json"
         self.memo = _read_json(self.memo_path, {})
@@ -505,7 +527,8 @@ class Poller:
         self.t0 = _now()
         self.fail_streak = 0
         self.render_warned = False
-        self.cadence = 30
+        self.cadence = cadence(every=args.every) if args.every else 30  # until a tick works out the real one
+        self.paused = False   # a local run waiting for its next night window
 
     # the provider's name and where the run is, in plain words
     def _where(self, run: dict) -> str:
@@ -534,9 +557,15 @@ class Poller:
         rows = runlib.read_metrics(self.run_dir / "metrics.jsonl")
         lines: list[str] = []
         with sp.status_lock(self.lab):
-            doc = json.loads((self.lab / "status.json").read_text())
+            doc = json.loads((self.lab / "status.json").read_text(encoding="utf-8"))
             if not isinstance(doc, dict):
                 raise ValueError("status.json must be a JSON object")
+            if self.args.once and not self._known(doc, status_line, rows):
+                self.forget_dir()
+                raise UnknownRun(f"run {self.run_id} is not known on {sp._where(self.args.backend)}: it is not in "
+                                 f"{self.lab.name}/status.json, has no files, and the provider does not know it. "
+                                 "Nothing was recorded. Check the run id (a run launched seconds ago can take a "
+                                 "minute to appear).")
             run = self._run_entry(doc)
             state = self._update(doc, run, provider, status_line, rows, lines)
             sp.validate(doc)  # never write a status.json the status skill's `set` and `event` would then refuse
@@ -550,6 +579,16 @@ class Poller:
                     self.render_warned = True
         _atomic_write(self.memo_path, json.dumps(self.memo))
         return state, run, lines
+
+    def _known(self, doc: dict, status_line: str, rows: list) -> bool:
+        """Whether anyone knows this run: an entry in status.json, its files, or the provider."""
+        listed = any(isinstance(r, dict) and str(r.get("id")) == self.run_id for r in doc.get("runs") or [])
+        return listed or bool(status_line or rows) or self.backend.known or not self.new_dir
+
+    def forget_dir(self) -> None:
+        """Remove the run directory this poll made, when it holds nothing but the poll's own files."""
+        if self.new_dir and all(p.name in (".poll-tmp", ".poll.json") for p in self.run_dir.iterdir()):
+            shutil.rmtree(self.run_dir, ignore_errors=True)
 
     def _run_entry(self, doc: dict) -> dict:
         runs = doc.setdefault("runs", [])
@@ -594,10 +633,17 @@ class Poller:
                 if tries < FETCH_TRIES:
                     state = "running"
                     status_line = f"Finished on {where}; fetching the results"
-                else:
-                    state = {"complete": "done", "error": "failed", "cancelled": "stopped"}[provider]
-                    status_line = (f"Ended on {where} ({provider}), but its result files could not be fetched: "
+                else:  # no result files: nothing says how it went, so it counts as failed (exit 1)
+                    state = "failed"
+                    status_line = (f"Ended on {where} ({provider}), but the results could not be fetched: "
                                    "fetch them by hand")
+
+        # a local run between nights: stopped at the window's end while its launcher waits for the next one
+        self.paused = (b.name == "local" and state == "stopped" and status_line.strip().lower() == "stopped (deadline)"
+                       and runlib.launcher_alive(self.run_dir))
+        if self.paused:
+            state = "queued"
+            status_line = "Paused until the next night window; the launcher resumes it then"
 
         # step, total, eta
         step, total, rate = _progress_rows(rows)
@@ -683,9 +729,15 @@ class Poller:
         started = _parse_time(run.get("started")) or self.t0
         expected = self.args.expected_minutes or run.get("expected_minutes")
         self.cadence = cadence(expected, started, _now(), self.args.every)
+        if self.paused and not self.args.every:
+            self.cadence = max(self.cadence, 300)
         doc["refresh_seconds"] = min(max(self.cadence, sp.REFRESH_RANGE[0]), sp.REFRESH_RANGE[1])
         doc["updated"] = _iso(_now())
         return state
+
+
+class UnknownRun(Exception):
+    """A --once check of a run nobody knows: nothing is recorded."""
 
 
 def _val_text(run: dict) -> str:
@@ -712,8 +764,15 @@ def _run_id(text: str) -> str:
     return text
 
 
+EPILOG = """exit codes: 0 done (or a --once check), 3 stopped, 1 failed or an error. An ended run whose results
+could not be fetched is failed (exit 1). --once records nothing for a run nobody knows yet (exit 1). A local run
+paused between nights (local_run.py --nights N) shows as waiting and the poll keeps watching. Without LAB/status.json
+the poll starts a minimal one (--goal). `status_page.py forget --lab LAB RUN_ID` removes a run's entry."""
+
+
 def parse_args(argv=None):
-    p = argparse.ArgumentParser(prog="poll.py", description="Watch one freelab run and keep the status page current.")
+    p = argparse.ArgumentParser(prog="poll.py", description="Watch one freelab run and keep the status page current.",
+                                epilog=EPILOG, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("backend", choices=BACKENDS)
     p.add_argument("run_id", type=_run_id)
     p.add_argument("--lab", default="lab", help="the lab directory (default: lab)")
@@ -726,7 +785,22 @@ def parse_args(argv=None):
     p.add_argument("--kernel", help="kaggle: OWNER/SLUG (default: from lab/backends/kaggle-ID/kernel-metadata.json)")
     p.add_argument("--teamspace", help="lightning: ORG/TEAMSPACE (default: from the onboarded marker)")
     p.add_argument("--job", help="lightning: the job name (default: the run id)")
+    p.add_argument("--goal", default=DEFAULT_GOAL,
+                   help=f"without LAB/status.json: the goal text of the minimal one the poll starts "
+                        f"(default {DEFAULT_GOAL!r})")
     return p.parse_args(argv)
+
+
+def start_status(lab: Path, goal: str) -> None:
+    """Write a minimal valid LAB/status.json (no charter yet: metric accuracy, no target) unless one exists."""
+    lab.mkdir(parents=True, exist_ok=True)
+    with sp.status_lock(lab):
+        path = lab / "status.json"
+        if not path.exists():
+            doc = sp.new_status({"text": " ".join(goal.split()) or DEFAULT_GOAL, "metric": "accuracy",
+                                 "target": None, "direction": "max"}, {})
+            sp.validate(doc)
+            _atomic_write(path, json.dumps(doc, indent=2) + "\n")
 
 
 def main(argv=None) -> int:
@@ -735,21 +809,23 @@ def main(argv=None) -> int:
     if args.link and not sp.valid_link(args.link):
         print(f"poll: --link must be an http(s) URL, got {args.link!r}", file=sys.stderr)
         return 1
-    if not (lab / "status.json").is_file():
-        print(f"poll: {lab / 'status.json'} is missing; start it first (the status skill, section 1)",
-              file=sys.stderr)
-        return 1
     if args.backend != "local" and not os.access(_withenv(), os.X_OK):
         print(f"poll: {_withenv()} is missing or not executable", file=sys.stderr)
         return 1
-    if args.backend == "kaggle" and not (args.kernel or kaggle_ref(lab.resolve().parent, args.run_id)):
-        print("poll: kaggle needs --kernel OWNER/SLUG (no lab/backends/kaggle-ID/kernel-metadata.json found)",
+    if args.backend == "kaggle" and not (args.kernel or kaggle_ref(lab.resolve(), args.run_id)):
+        print(f"poll: kaggle needs --kernel OWNER/SLUG (no {lab}/backends/kaggle-ID/kernel-metadata.json found)",
               file=sys.stderr)
         return 1
     if args.backend == "lightning" and not (args.teamspace or Lightning._teamspace_from_marker()):
         print("poll: lightning needs --teamspace ORG/TEAMSPACE (no lightning_teamspace in the onboarded marker)",
               file=sys.stderr)
         return 1
+    if not (lab / "status.json").is_file():
+        try:
+            start_status(lab, args.goal)
+        except (OSError, ValueError) as e:
+            print(f"poll: could not start {lab / 'status.json'}: {e}", file=sys.stderr)
+            return 1
 
     poller = Poller(args)
     run: dict = {}
@@ -759,6 +835,9 @@ def main(argv=None) -> int:
             try:
                 state, run, lines = poller.tick()
                 errors = 0
+            except UnknownRun as e:
+                print(f"poll: {e}", file=sys.stderr, flush=True)
+                return 1
             except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
                 errors += 1
                 print(f"poll: could not update {lab / 'status.json'}: {e}", file=sys.stderr, flush=True)
@@ -777,6 +856,8 @@ def main(argv=None) -> int:
             if args.once:
                 print(f"now: {state} step={_steps_text(run)} val={_val_text(run)}", flush=True)
                 return 0
+            if poller.paused:  # waiting for the next night: --max-hours counts from the latest resume
+                poller.t0 = _now()
             max_hours = args.max_hours
             if max_hours is None:
                 expected = args.expected_minutes or run.get("expected_minutes")
@@ -785,7 +866,7 @@ def main(argv=None) -> int:
                 print(f"poll: stopped watching after {max_hours:g} h; run {args.run_id} is still "
                       f"{state or 'unknown'} (step={_steps_text(run)} val={_val_text(run)})", flush=True)
                 return 1
-            _sleep(cadence(every=args.every) if args.every else poller.cadence)
+            _sleep(poller.cadence)
     finally:
         if not args.once:  # a --once check leaves a Kaggle live log stream running for the next check
             poller.backend.close()

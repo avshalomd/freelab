@@ -236,8 +236,11 @@ def test_bad_link_missing_status_and_max_hours(cloud, proj, capsys):
     cloud.put("status.txt", "epoch 1/3\n")
     assert poll.main(["modal", "r1", "--max-hours", "0"]) == 1
     assert "stopped watching" in capsys.readouterr().out
-    (proj / "lab" / "status.json").unlink()
-    assert poll.main(["modal", "r1", "--once"]) == 1
+    (proj / "lab" / "status.json").unlink()   # no status.json (onboarding's connection check): the poll starts one
+    assert poll.main(["modal", "r1", "--once"]) == 0
+    assert status(proj)["goal"] == {"text": "connection check", "metric": "accuracy", "target": None,
+                                    "direction": "max"}
+    assert run_of(proj)["state"] == "running" and (proj / "lab" / "status.html").is_file()
 
 
 def test_tick_errors_honour_every_max_hours_and_give_up(cloud, proj, capsys, monkeypatch):
@@ -367,8 +370,10 @@ def test_kaggle_complete_but_files_missing_waits_then_gives_up(cloud, proj, monk
     for _ in range(poll.FETCH_TRIES - 1):
         assert poll.main(["kaggle", "r1", "--once"]) == 0
         assert "fetching the results" in run_of(proj)["detail"]
-    assert poll.main(["kaggle", "r1", "--once"]) == 0
-    assert run_of(proj)["state"] == "done" and "fetch them by hand" in run_of(proj)["detail"]
+    assert poll.main(["kaggle", "r1", "--once"]) == 1
+    detail = run_of(proj)["detail"]
+    assert run_of(proj)["state"] == "failed" and "results could not be fetched: fetch them by hand" in detail
+    assert "final: failed" in capsys.readouterr().out
 
 
 def test_kaggle_needs_a_kernel_ref(cloud, proj):
@@ -510,3 +515,88 @@ def test_a_run_folder_written_by_runlib_reads_back_in_poll_and_the_page(proj, ca
     sp.validate(status(proj))
     html = (proj / "lab" / "status.html").read_text()
     assert "75%" in html and not re.search(r"\bnan\b", html, re.I)
+
+
+# --- 0.4.1 ---------------------------------------------------------------------------------------
+
+def _train_rows(start: datetime, steps, every_s=6.0, step0=1):
+    return [{"t": (start + timedelta(seconds=i * every_s)).isoformat(), "step": step0 + i, "total": 1000,
+             "split": "train", "name": "loss", "value": 1.0} for i in range(steps)]
+
+
+def test_eta_rate_ignores_the_gap_before_a_resume():
+    t0 = datetime(2026, 10, 1, 10, 0, tzinfo=timezone.utc)
+    before = _train_rows(t0, 30)                                       # 1 step every 6 s
+    after = _train_rows(t0 + timedelta(hours=20), 10, step0=31)        # resumed 20 h later, same pace
+    step, total, rate = poll._progress_rows(before + after)
+    assert step == 40 and total == 1000 and rate == pytest.approx(1 / 6)
+    _, _, steady = poll._progress_rows(_train_rows(t0, 40))
+    assert steady == pytest.approx(1 / 6)
+    _, _, just_resumed = poll._progress_rows(before + after[:1])       # one row since the resume: no rate yet
+    assert just_resumed is None
+
+
+def test_no_status_json_starts_one_with_the_given_goal(tmp_path, monkeypatch):
+    lab = tmp_path / "proj" / "lab"
+    run_dir = lab / "runs" / "smoke"
+    run_dir.mkdir(parents=True)
+    (run_dir / "status.txt").write_text("done\n")
+    (run_dir / "metrics.jsonl").write_text(rows(0, 50, train_to=50, total=50))
+    assert poll.main(["local", "smoke", "--lab", str(lab), "--once", "--goal", "Check Modal works"]) == 0
+    doc = json.loads((lab / "status.json").read_text())
+    assert doc["goal"]["text"] == "Check Modal works" and doc["goal"]["target"] is None
+    assert doc["runs"][0]["state"] == "done" and (lab / "status.html").is_file()
+    sp.set_key(lab, "goal", GOAL)   # the plan skill sets the real goal later
+    assert json.loads((lab / "status.json").read_text())["goal"] == GOAL
+
+
+def test_once_records_nothing_for_an_unknown_run(cloud, proj, capsys):
+    before = status(proj)
+    assert poll.main(["modal", "typo", "--once"]) == 1
+    assert "not known" in capsys.readouterr().err
+    assert status(proj) == before and not (proj / "lab" / "runs" / "typo").exists()
+    assert poll.main(["local", "typo", "--once"]) == 1 and not (proj / "lab" / "runs" / "typo").exists()
+    cloud.put("status.txt", "epoch 1/3\n")                    # the run's files exist: it is recorded
+    assert poll.main(["modal", "typo", "--once"]) == 0 and run_of(proj, "typo")["state"] == "running"
+
+
+def test_once_records_a_run_the_provider_knows(cloud, proj):
+    d = proj / "lab" / "backends" / "kaggle-new"
+    d.mkdir(parents=True)
+    (d / "kernel-metadata.json").write_text(json.dumps({"id": "alice/freelab-new"}))
+    cloud.kaggle_status = "queued"
+    assert poll.main(["kaggle", "new", "--once"]) == 0 and run_of(proj, "new")["state"] == "queued"
+
+
+def test_kaggle_ref_follows_the_lab_option(cloud, tmp_path, monkeypatch):
+    lab = tmp_path / "elsewhere" / "mylab"
+    d = lab / "backends" / "kaggle-r9"
+    d.mkdir(parents=True)
+    (d / "kernel-metadata.json").write_text(json.dumps({"id": "alice/freelab-r9"}))
+    assert poll.kaggle_ref(lab, "r9") == "alice/freelab-r9"
+    assert poll.main(["kaggle", "r9", "--lab", str(lab), "--once"]) == 0
+    assert any(c[:4] == ["kaggle", "kernels", "status", "alice/freelab-r9"] for c in cloud.calls)
+
+
+def test_a_local_run_between_nights_is_waiting_and_watched(proj, monkeypatch, capsys):
+    import os, runlib
+    monkeypatch.setattr(poll, "_run", lambda *a, **k: pytest.fail("local runs need no command"))
+    run_dir = proj / "lab" / "runs" / "r1"
+    run_dir.mkdir(parents=True)
+    (run_dir / "status.txt").write_text("stopped (deadline)\n")
+    (run_dir / "metrics.jsonl").write_text(rows(0, 97, train_to=100))
+    (run_dir / runlib.LAUNCHER_MARKER).write_text(str(os.getpid()))   # the launcher sleeps until the next night
+    slept = []
+
+    def sleep(seconds):
+        slept.append(seconds)
+        if len(slept) == 2:   # the launcher ends: night 2 was the last
+            (run_dir / runlib.LAUNCHER_MARKER).unlink()
+    monkeypatch.setattr(poll, "_sleep", sleep)
+    assert poll.main(["local", "r1", "--max-hours", "0.0001"]) == 3
+    assert len(slept) == 2 and min(slept) >= 300
+    out = capsys.readouterr().out
+    assert out.splitlines()[-1].startswith("final: stopped") and "stopped watching" not in out
+    (run_dir / runlib.LAUNCHER_MARKER).write_text(str(os.getpid()))
+    assert poll.main(["local", "r1", "--once"]) == 0
+    assert run_of(proj)["state"] == "queued" and "next night" in run_of(proj)["detail"]

@@ -1,13 +1,13 @@
-"""freelab status page: lab/status.json -> a self-contained HTML page (stdlib only).
-No external requests: CSS and the SVG charts are inline. Every value that comes from the data is
-escaped with html.escape. Schema is status.json version 1 (see the design spec, S4): {version,
-updated, goal, best, runs, budget, decisions, events}. status.json may also hold an optional
-`stages` key (a plan of named stages with a state and detail), so a status.json written before
-stages existed (freelab 0.1.0) still renders. `budget` may hold an optional `usd_free` (the free
-credit, in dollars), marked on the cost meter. lab/runs/<id>/metrics.jsonl feeds the charts and
-lab/results.tsv, when present, is the research loop's experiment log.
+"""freelab status page: lab/status.json -> a self-contained HTML page (stdlib only). No external requests: CSS and the
+SVG charts are inline. Every value that comes from the data is escaped with html.escape. Schema is status.json
+version 1 (skills/status/SKILL.md): {version, updated, goal, best, runs, budget, decisions, events}. goal.target may
+be null while there is no charter yet (scripts/poll.py starts a status.json for onboarding's connection check that
+way); `set goal` needs a number. status.json may also hold an optional `stages` key (a plan of named stages with a
+state and detail), so a status.json written before stages existed (freelab 0.1.0) still renders. `budget` may hold
+an optional `usd_free` (the free credit, in dollars), marked on the cost meter. lab/runs/<id>/metrics.jsonl feeds
+the charts and lab/results.tsv, when present, is the research loop's experiment log.
 
-The page, top to bottom (spec 0.3.0, S6): one plain sentence on what is happening now; a bar
+The page, top to bottom: one plain sentence on what is happening now; a bar
 from the start (the step-0 value of the split the result comes from) to the target with the best
 so far marked; charts (the goal's metric per split with dashed start and target lines, the kept
 metric per experiment); training health (the training loss with its moving average, the scores at
@@ -21,10 +21,12 @@ by the agent; its <script> tags are stripped). A run may carry `link` (the provi
 http(s) URL), shown as an "Open on <provider>" link, and `expected_minutes`, which scripts/poll.py uses for its
 cadence.
 
-CLI: `status_page.py LAB` renders LAB/status.html; `status_page.py event --lab LAB "text"` adds one event, and
-`status_page.py set --lab LAB KEY JSON` sets one field (best, budget, budget.NAME, stages, decisions, goal, layout,
-refresh_seconds), each under LAB/.status.lock (the lock scripts/poll.py uses), validated, written atomically, then
-rendered. Events are newest first; trim_events keeps EVENTS_CAP of them plus every "research loop ..." event."""
+CLI (CLI_HELP below): `status_page.py LAB` renders LAB/status.html; `event --lab LAB "text"` adds one event;
+`set --lab LAB KEY JSON` sets one field (best, budget, budget.NAME, stages, decisions, goal, layout, refresh_seconds);
+`forget --lab LAB RUN_ID` removes one run's entry (a run that never launched, such as a typo'd id). Each holds
+LAB/.status.lock (the lock scripts/poll.py uses), validates, renders the page from the new document, and only then
+writes status.json and status.html atomically: an exit 2 writes nothing. Events are newest first; trim_events keeps
+EVENTS_CAP of them plus every "research loop ..." event."""
 from __future__ import annotations
 import argparse, html, json, math, os, re, sys
 from contextlib import contextmanager
@@ -33,6 +35,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import runlib
+from runlib import atomic_write
 
 try:
     import fcntl
@@ -100,7 +103,7 @@ def valid_link(url) -> bool:
 def validate(doc: dict) -> None:
     """Raise ValueError naming the key for a missing/unknown top-level key, a version other
     than 1, a run missing/with an unknown key, a run state outside RUN_STATES, a malformed
-    `best` or `goal` (text, metric, a numeric target, direction), or a malformed `stages`
+    `best` or `goal` (text, metric, a numeric or null target, direction), or a malformed `stages`
     entry (name, state outside STAGE_STATES, detail). `stages` is optional (OPTIONAL_KEYS),
     so a status.json written before it existed (freelab 0.1.0) still validates."""
     if not isinstance(doc, dict):
@@ -119,8 +122,8 @@ def validate(doc: dict) -> None:
     for key in ("text", "metric"):
         if not isinstance(goal.get(key), str) or not goal[key].strip():
             raise ValueError(f"goal.{key} must be non-empty text, got {goal.get(key)!r}")
-    if not _finite_number(goal.get("target")):
-        raise ValueError(f"goal.target must be a number, got {goal.get('target')!r}")
+    if "target" not in goal or (goal["target"] is not None and not _finite_number(goal["target"])):
+        raise ValueError(f"goal.target must be a number (or null before the charter), got {goal.get('target')!r}")
     direction = goal.get("direction")
     if direction not in ("max", "min"):
         raise ValueError(f"goal.direction must be 'max' or 'min', got {direction!r}")
@@ -548,10 +551,12 @@ def now_sentence(doc: dict, series: dict, trained: bool | None = None) -> str:
     percent = _percent_metric(metric, direction, values)
     or_lower = " or lower" if direction == "min" else ""
     words = str(metric).replace("_", " ")
+    has_target = _finite_number(target)
+    target_text = f" Target: {words} {_fmt_value(target, percent)}{or_lower}." if has_target else ""
     runs = [r for r in doc.get("runs") or [] if isinstance(r, dict)]
     focus = _focus_run(runs)
     if focus is None:
-        return f"Nothing has run yet. Target: {words} {_fmt_value(target, percent)}{or_lower}."
+        return "Nothing has run yet." + target_text
 
     state = focus.get("state")
     lead = _lead(focus, bool(series.get("train")) if trained is None else trained)
@@ -560,14 +565,14 @@ def now_sentence(doc: dict, series: dict, trained: bool | None = None) -> str:
         lead += f" {others} more run{' is' if others == 1 else 's are'} active."
     final, split = _result(doc, series, focus)
     if final is None:
-        return f"{lead} No results yet. Target: {words} {_fmt_value(target, percent)}{or_lower}."
+        return f"{lead} No results yet.{target_text}"
     first = start_point = _start_of(series, split, final)
     if first is None and split and series[split][0][0] == 0 and _close(series[split][0][1], final):
         first = series[split][0]  # the only point so far is the start itself
 
     show_best = state in ACTIVE_STATES and best is not None and _better(best, final, direction)
-    s, f, t, b = _fmt_values([final if first is None else first[1], final, target, best if show_best else final],
-                             percent)
+    s, f, t, b = _fmt_values([final if first is None else first[1], final, target if has_target else final,
+                              best if show_best else final], percent)
     name = _metric_label(metric)
     if start_point is not None:
         clause = f"{name} went from {s} to {f}"
@@ -575,7 +580,9 @@ def now_sentence(doc: dict, series: dict, trained: bool | None = None) -> str:
         clause = f"{name} is {s} at the start"
     else:
         clause = f"{name} is {f}" + (" so far" if state in ACTIVE_STATES else "")
-    if state == "done":
+    if not has_target:
+        tail = "."
+    elif state == "done":
         reached = "reached" if _met(final, target, direction) else "not reached"
         tail = f"; the target of {t}{or_lower} is {reached}."
     else:
@@ -749,7 +756,8 @@ def _metric_figure(rows: list, goal: dict, total=None, start_split: str | None =
         return ""
     is_goal = metric == goal["metric"]
     direction = goal["direction"] if is_goal else None
-    values = [v for points in series.values() for _, v in points] + ([goal["target"]] if is_goal else [])
+    target = goal.get("target") if is_goal and _finite_number(goal.get("target")) else None
+    values = [v for points in series.values() for _, v in points] + ([target] if target is not None else [])
     percent = _percent_metric(metric, direction, values)
     order = [k for k in ("train", "test", "val") if k in series] + [k for k in series if k not in _SPLIT_LEGEND]
     drawn = []
@@ -764,14 +772,19 @@ def _metric_figure(rows: list, goal: dict, total=None, start_split: str | None =
         split = start_split if series.get(start_split) else _headline_split(series)
         points = series[split]
         start = points[0][1] if len(points) > 1 or points[0][0] == 0 else None
-        s, t = _fmt_values([goal["target"] if start is None else start, goal["target"]], percent)
+        s = _fmt_value(start, percent) if start is not None else ""
+        if start is not None and target is not None:
+            s, t = _fmt_values([start, target], percent)
+        elif target is not None:
+            t = _fmt_value(target, percent)
         if start is not None:
             word = f"{_SPLIT_WORDS.get(split, split)} " if len(series) > 1 else ""
             refs.append({"key": "baseline", "value": start, "text": f"{word}start {s}",
                          "where": "right-below" if direction == "min" else "right-above"})
             legend.append(("baseline", f"Start{' on ' + word.strip() if word else ''} ({s})", "dash"))
-        refs.append({"key": "target", "value": goal["target"], "text": f"target {t}", "where": "left-above"})
-        legend.append(("target", f"Target ({t})", "dash"))
+        if target is not None:
+            refs.append({"key": "target", "value": target, "text": f"target {t}", "where": "left-above"})
+            legend.append(("target", f"Target ({t})", "dash"))
     x_max = max(x for points in series.values() for x, _ in points)
     if _finite_number(total) and total > x_max:
         x_max = total
@@ -781,7 +794,8 @@ def _metric_figure(rows: list, goal: dict, total=None, start_split: str | None =
                      aria=f"{label} over training steps", x_domain=(0, x_ticks[-1]), x_ticks=x_ticks)
     better = {"max": "Higher is better. ", "min": "Lower is better. "}.get(direction, "")
     note = better + ("The dashed lines show where it started and the target." if len(refs) > 1 else
-                     "The dashed line shows the target." if refs else "Each line is one set of examples.")
+                     "The dashed line shows the target." if target is not None and refs else
+                     "The dashed line shows where it started." if refs else "Each line is one set of examples.")
     return _figure("metric", f"{label} during training", note, svg, _legend(legend))
 
 
@@ -815,19 +829,21 @@ def _results_figure(rows: list, goal: dict) -> str:
         return ""
     keep = [(i, r["metric"]) for i, r in scored if r["status"] == "keep"]
     discard = [(i, r["metric"]) for i, r in scored if r["status"] != "keep"]
-    percent = _percent_metric(goal["metric"], goal["direction"], [m for _, m in keep + discard] + [goal["target"]])
-    t = _fmt_value(goal["target"], percent)
+    target = goal.get("target") if _finite_number(goal.get("target")) else None
+    percent = _percent_metric(goal["metric"], goal["direction"], [m for _, m in keep + discard] + [target])
+    t = _fmt_value(target, percent) if target is not None else ""
     n = len(rows)
     x_ticks = list(range(1, n + 1)) if n <= 10 else [x for x in _ticks(1, n, 5, min_step=1)[0] if 1 <= x <= n]
     drawn = [{"key": "kept", "points": keep, "line": True, "dots": False},
              {"key": "discard", "points": discard, "line": False, "dots": True},
              {"key": "keep", "points": keep, "line": False, "dots": True}]
-    refs = [{"key": "target", "value": goal["target"], "text": f"target {t}", "where": "left-above"}]
+    refs = [{"key": "target", "value": target, "text": f"target {t}", "where": "left-above"}] if target is not None \
+        else []
     label = _metric_label(goal["metric"])
     svg = _svg_chart(drawn, refs, percent=percent, y_title=label, x_title="Experiment",
                      aria=f"{label} per experiment", x_domain=(0.5, n + 0.5), x_ticks=x_ticks)
-    legend = _legend([("keep", "Kept (it improved the result)", "dot"), ("discard", "Discarded", "hollow"),
-                      ("target", f"Target ({t})", "dash")])
+    legend = _legend([("keep", "Kept (it improved the result)", "dot"), ("discard", "Discarded", "hollow")]
+                     + ([("target", f"Target ({t})", "dash")] if target is not None else []))
     crashed = len(rows) - len(scored)
     note = f"Each dot is one experiment's {label.lower()}. The line joins the kept ones." + (
         f" {crashed} crashed and {'has' if crashed == 1 else 'have'} no dot." if crashed else "")
@@ -1181,7 +1197,9 @@ def _render_measurements(rows: list, goal: dict) -> str:
 
 def _render_glossary(goal: dict, rows: list) -> str:
     sym = _DIRECTION_SYMBOL[goal["direction"]]
-    terms = [("Goal", f"{_esc(goal['metric'])} {sym} {_fmt_num(goal['target'])}, as the charter states it."),
+    goal_text = (f"{_esc(goal['metric'])} {sym} {_fmt_num(goal['target'])}, as the charter states it."
+                 if _finite_number(goal.get("target")) else f"{_esc(goal['metric'])}; no target set yet.")
+    terms = [("Goal", goal_text),
              ("Step", "one small update of the model from a batch of training examples."),
              ("Validation", "examples kept out of training and checked during it, to see progress honestly."),
              ("Test", "a separate set of examples, scored at the start and once at the end."),
@@ -1234,7 +1252,8 @@ def _render_top(doc: dict, sentence: str, percent: bool, focus: dict | None) -> 
     notice = (f'<p class="notice">{n} decision{" is" if n == 1 else "s are"} waiting for you: see Details '
               "below.</p>" if n else "")
     sym = _DIRECTION_SYMBOL[goal["direction"]]
-    target = f"{_esc(goal['metric'])} {sym} {_fmt_value(goal['target'], percent)}"
+    target = (f"{_esc(goal['metric'])} {sym} {_fmt_value(goal['target'], percent)}"
+              if _finite_number(goal.get("target")) else "none set yet")
     link = _run_link(focus, "run-link btn")
     actions = f'<p class="top-actions">{link}</p>' if link else ""
     return (f'<header class="top"><div class="eyebrow">{pill}<h1>{_esc(goal["text"])}</h1></div>'
@@ -1431,7 +1450,7 @@ class Page:
         self.series = series = _metric_series(rows, goal["metric"])
         self.results = read_results(self.lab / "results.tsv")
         best = _best_value(doc)
-        values = [v for points in series.values() for _, v in points] + [goal["target"]] + [best] * (best is not None)
+        values = [v for points in series.values() for _, v in points] + [goal.get("target")] + [best] * (best is not None)
         self.percent = _percent_metric(goal["metric"], goal["direction"], values)
         self.trained = any(r.get("split") == "train" for r in rows)
         self.sentence = now_sentence(doc, series, self.trained)
@@ -1454,6 +1473,8 @@ def _block_headline(p: Page) -> str:
 
 
 def _block_progress(p: Page) -> str:
+    if not _finite_number(p.goal.get("target")):
+        return ""  # no target yet (onboarding's connection check): nothing to show progress toward
     return ('<section class="card progress"><h2>Progress to the target</h2>'
             + _render_target_bar(p.start[1] if p.start else None, p.value, p.goal["target"], p.goal["direction"],
                                  p.percent, p.label) + "</section>")
@@ -1548,12 +1569,14 @@ def render_blocks(page: Page, layout) -> str:
     return "".join(out)
 
 
-def render(lab) -> str:
+def render(lab, doc: dict | None = None) -> str:
     """Render lab/status.json into a self-contained HTML status page: the blocks of its `layout` (DEFAULT_LAYOUT:
     the Now sentence, the progress bar, the charts, training health, the plan, cost and time, and the collapsed
-    details), then the footer. It reloads itself every `refresh_seconds` (default 30) while a run is active."""
+    details), then the footer. It reloads itself every `refresh_seconds` (default 30) while a run is active. `doc`
+    renders that document instead of reading lab/status.json (so a change is rendered before it is written)."""
     lab = Path(lab)
-    doc = json.loads((lab / "status.json").read_text())
+    if doc is None:
+        doc = json.loads((lab / "status.json").read_text(encoding="utf-8"))
     validate(doc)
     page = Page(lab, doc)
     body = render_blocks(page, doc.get("layout") or DEFAULT_LAYOUT) + (
@@ -1577,20 +1600,17 @@ def render(lab) -> str:
     return head_html + body + "\n</main>\n</body>\n</html>\n"
 
 
-def write_page(lab) -> Path:
-    """Render and write lab/status.html atomically (a temporary file, then a rename)."""
+def write_page(lab, doc: dict | None = None) -> Path:
+    """Render (from `doc`, else lab/status.json) and write lab/status.html atomically."""
     out = Path(lab) / "status.html"
-    page = render(lab)
-    tmp = out.with_name(out.name + ".tmp")
-    tmp.write_text(page)
-    os.replace(tmp, out)
+    atomic_write(out, render(lab, doc))
     return out
 
 
 @contextmanager
 def status_lock(lab):
     """Hold LAB/.status.lock (exclusive) around a read-modify-write of status.json; scripts/poll.py takes it too."""
-    with (Path(lab) / ".status.lock").open("a") as lock:
+    with (Path(lab) / ".status.lock").open("a", encoding="utf-8") as lock:
         if fcntl:
             fcntl.flock(lock, fcntl.LOCK_EX)
         try:
@@ -1602,21 +1622,21 @@ def status_lock(lab):
 
 def _locked_update(lab, change) -> Path:
     """Read lab/status.json under lab/.status.lock (the lock scripts/poll.py takes around its own read-modify-write),
-    apply `change(doc)`, set `updated`, validate, write status.json atomically, then re-render the page. Nothing is
-    written when `change` or the validation raises."""
+    apply `change(doc)`, set `updated`, validate and render the page from the new document, then write status.json
+    and status.html atomically. Nothing is written when `change`, the validation or the rendering raises."""
     lab = Path(lab)
     with status_lock(lab):
         path = lab / "status.json"
-        doc = json.loads(path.read_text())
+        doc = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(doc, dict):
             raise ValueError("status.json must be a JSON object")
         change(doc)
         doc["updated"] = _now()
-        validate(doc)
-        tmp = path.with_name(path.name + ".tmp")
-        tmp.write_text(json.dumps(doc, indent=2) + "\n")
-        os.replace(tmp, path)
-        return write_page(lab)
+        page = render(lab, doc)  # validates
+        atomic_write(path, json.dumps(doc, indent=2) + "\n")
+        out = lab / "status.html"
+        atomic_write(out, page)
+        return out
 
 
 def add_event(lab, text: str) -> Path:
@@ -1649,6 +1669,9 @@ def set_key(lab, key: str, value) -> Path:
             _finite_number(value) and value >= 0):
         raise ValueError(f"{key} must be a number of dollars (0 or more) or null, got {value!r}")
 
+    if key == "goal" and not (isinstance(value, dict) and _finite_number(value.get("target"))):
+        raise ValueError("goal.target must be a number: the charter's numeric target")
+
     def change(doc: dict) -> None:
         if len(parts) == 1:
             doc[key] = value
@@ -1660,12 +1683,49 @@ def set_key(lab, key: str, value) -> Path:
     return _locked_update(lab, change)
 
 
+def forget_run(lab, run_id: str) -> Path:
+    """Remove run `run_id`'s entry from lab/status.json (a run that never launched, such as a typo'd id, so it stops
+    showing as starting and blocking the cleanup), under the lock, then re-render the page. Its files, if any, stay."""
+    def change(doc: dict) -> None:
+        runs = doc.get("runs")
+        if not isinstance(runs, list):
+            raise ValueError("runs must be a list")
+        kept = [r for r in runs if not (isinstance(r, dict) and str(r.get("id")) == run_id)]
+        if len(kept) == len(runs):
+            raise ValueError(f"no run {run_id!r} in status.json")
+        doc["runs"] = kept
+    return _locked_update(lab, change)
+
+
+CLI_HELP = """usage:
+  status_page.py LAB                        render LAB/status.html from LAB/status.json
+  status_page.py event --lab LAB "text"     add one event (newest first)
+  status_page.py set --lab LAB KEY JSON     set one field: best, budget, budget.NAME, stages, decisions, goal,
+                                            layout or refresh_seconds (the value is JSON: 0.42, null, '"text"')
+  status_page.py forget --lab LAB RUN_ID    remove one run's entry (a run that never launched)
+
+Each takes LAB/.status.lock, validates, renders, then writes status.json and status.html atomically.
+Exit 0 on success; exit 2 (with the reason on stderr) writes nothing."""
+
+
 def main(argv=None) -> None:
-    """`status_page.py LAB` renders lab/status.html; `event --lab LAB "text"` adds an event first; `set --lab LAB KEY
-    JSON` sets one field first."""
+    """The CLI: see CLI_HELP."""
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "forget":
+        parser = argparse.ArgumentParser(prog="status_page.py forget", epilog=CLI_HELP,
+                                         formatter_class=argparse.RawDescriptionHelpFormatter)
+        parser.add_argument("--lab", type=Path, default=Path("lab"), help="lab directory (default lab)")
+        parser.add_argument("run_id", help="the run whose entry to remove")
+        args = parser.parse_args(argv[1:])
+        try:
+            forget_run(args.lab, args.run_id)
+        except (ValueError, OSError) as e:
+            print(f"status_page: could not forget {args.run_id}: {e}", file=sys.stderr)
+            raise SystemExit(2)
+        return
     if argv and argv[0] == "set":
-        parser = argparse.ArgumentParser(prog="status_page.py set")
+        parser = argparse.ArgumentParser(prog="status_page.py set", epilog=CLI_HELP,
+                                         formatter_class=argparse.RawDescriptionHelpFormatter)
         parser.add_argument("--lab", type=Path, default=Path("lab"), help="lab directory (default lab)")
         parser.add_argument("key", help=f"one of {', '.join(SET_KEYS)}, or budget.NAME (e.g. budget.usd_spent)")
         parser.add_argument("value", help="the new value, as JSON (e.g. 0.42, null, '{\"value\": 0.86, ...}')")
@@ -1682,7 +1742,8 @@ def main(argv=None) -> None:
             raise SystemExit(2)
         return
     if argv and argv[0] == "event":
-        parser = argparse.ArgumentParser(prog="status_page.py event")
+        parser = argparse.ArgumentParser(prog="status_page.py event", epilog=CLI_HELP,
+                                         formatter_class=argparse.RawDescriptionHelpFormatter)
         parser.add_argument("--lab", type=Path, default=Path("lab"), help="lab directory (default lab)")
         parser.add_argument("text", help="the event, in plain words")
         args = parser.parse_args(argv[1:])
@@ -1692,11 +1753,13 @@ def main(argv=None) -> None:
             print(f"status_page: could not add the event: {e}", file=sys.stderr)
             raise SystemExit(2)
         return
-    parser = argparse.ArgumentParser(prog="status_page.py")
+    parser = argparse.ArgumentParser(prog="status_page.py", epilog=CLI_HELP,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("lab", type=Path, help="lab directory containing status.json")
     args = parser.parse_args(argv)
     try:
-        write_page(args.lab)
+        with status_lock(args.lab):
+            write_page(args.lab)
     except (ValueError, OSError) as e:
         print(f"status_page: invalid status.json: {e}", file=sys.stderr)
         raise SystemExit(2)

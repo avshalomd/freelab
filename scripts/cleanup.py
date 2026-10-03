@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from runlib import complete_checkpoints, has_checkpoint  # noqa: E402
+from runlib import complete_checkpoints, has_checkpoint, launcher_alive  # noqa: E402
 
 ACTIVE_STATES = ("queued", "starting", "running")
 RESULT_STATUSES = ("keep", "discard", "crash")
@@ -30,7 +30,7 @@ LOOP_WORKTREE = "loop"
 
 def _json(p: Path):
     try:
-        return json.loads(p.read_text())
+        return json.loads(p.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, ValueError):
         return None
 
@@ -70,7 +70,7 @@ def results_rows(lab: Path) -> list[dict]:
     p = lab / "results.tsv"
     if not p.is_file():
         return []
-    lines = [l for l in p.read_text(errors="replace").splitlines() if l.strip()]
+    lines = [l for l in p.read_text(encoding="utf-8", errors="replace").splitlines() if l.strip()]
     if not lines:
         return []
     head = lines[0].split("\t")
@@ -78,16 +78,18 @@ def results_rows(lab: Path) -> list[dict]:
 
 
 def run_class(lab: Path, rid: str, states: dict, finished_ids: set) -> str:
-    """§1: finished, running, resumable or ended. When in doubt, a run counts as running (not finished)."""
+    """§1: finished, running, resumable or ended. When in doubt, a run counts as running (not finished). A folder
+    with no status.txt, no metrics.jsonl and no status.json entry (a run that never launched) has ended."""
     run = lab / "runs" / rid
-    if states.get(rid) in ACTIVE_STATES:
+    if states.get(rid) in ACTIVE_STATES or launcher_alive(run):
         return "running"
     if rid in finished_ids or (run / "summary.json").is_file():
         return "finished"
     try:
-        st = (run / "status.txt").read_text(errors="replace").strip().splitlines()[0].strip()
+        st = (run / "status.txt").read_text(encoding="utf-8", errors="replace").strip().splitlines()[0].strip()
     except (OSError, IndexError):
-        return "running"
+        never_ran = not (run / "status.txt").exists() and not (run / "metrics.jsonl").exists() and rid not in states
+        return "ended" if never_ran else "running"
     if st.startswith("stopped"):
         return "resumable"
     if st.startswith("failed"):
@@ -280,8 +282,8 @@ def inventory(lab: Lab) -> dict:
 
 def _git_dirty(p: Path) -> bool:
     try:
-        r = subprocess.run(["git", "-C", str(p), "status", "--porcelain"], capture_output=True, text=True,
-                           timeout=30)
+        r = subprocess.run(["git", "-C", str(p), "status", "--porcelain"], capture_output=True, encoding="utf-8",
+                           errors="replace", timeout=30)
     except (OSError, subprocess.SubprocessError):
         return True
     return r.returncode != 0 or bool(r.stdout.strip())
@@ -301,13 +303,13 @@ def scope_error(lab: Lab, path: str) -> str | None:
         return "empty path"
     if any(c in path for c in "*?[]{}~$"):
         return "not a literal path (no globs, variables or ~)"
+    if ".." in Path(path).parts:
+        return "give the path without '..', inside the lab"
     p = Path(os.path.normpath(path))
-    if p.is_absolute() or ".." in p.parts:
-        return "give the path relative to the project root, inside the lab"
     if p.name == "__pycache__":
         return None
-    try:
-        rel = p.relative_to(Path(os.path.normpath(str(lab.lab)))).as_posix()
+    try:  # the lab and the path may each be relative (to the project root) or absolute
+        rel = Path(os.path.abspath(p)).relative_to(Path(os.path.abspath(lab.lab))).as_posix()
     except ValueError:
         return f"outside {lab.lab.as_posix()}/"
     if not any(rx.match(rel) for rx in SCOPE):
@@ -317,10 +319,10 @@ def scope_error(lab: Lab, path: str) -> str | None:
 
 
 def _listed(inv: dict, path: str):
-    """The inventory item that is `path` or contains it."""
-    norm = Path(os.path.normpath(path))
+    """The inventory item that is `path` or contains it (relative and absolute spellings match)."""
+    norm = Path(os.path.abspath(path))
     for item in inv["light"] + inv["deep"]:
-        ip = Path(item["path"])
+        ip = Path(os.path.abspath(item["path"]))
         if norm == ip or ip in norm.parents:
             return item
     return None
@@ -332,7 +334,7 @@ def _log(lab: Lab, path: str, nbytes: int, note: str | None = None) -> None:
     if note:
         rec["note"] = note
     lab.lab.mkdir(parents=True, exist_ok=True)
-    with (lab.lab / "cleanup.jsonl").open("a") as f:
+    with (lab.lab / "cleanup.jsonl").open("a", encoding="utf-8") as f:
         f.write(json.dumps(rec) + "\n")
 
 
@@ -344,12 +346,12 @@ def _delete(lab: Lab, path: str, kind: str) -> str | None:
     nbytes = size_bytes(p)
     _log(lab, path, nbytes)
     if kind == "worktree":
-        r = subprocess.run(["git", "worktree", "remove", path], capture_output=True, text=True)
+        r = subprocess.run(["git", "worktree", "remove", path], capture_output=True, encoding="utf-8", errors="replace")
         if r.returncode != 0:
             msg = (r.stderr.strip().splitlines() or ["git refused"])[0]
             _log(lab, path, 0, note=f"not removed: {msg}")
             return f"git refused: {msg}"
-        subprocess.run(["git", "worktree", "prune"], capture_output=True, text=True)
+        subprocess.run(["git", "worktree", "prune"], capture_output=True, encoding="utf-8", errors="replace")
         return None
     if p.is_dir() and not p.is_symlink():
         shutil.rmtree(p)
@@ -359,21 +361,16 @@ def _delete(lab: Lab, path: str, kind: str) -> str | None:
 
 
 def light_clean(lab_dir: str, exps) -> int:
-    first = inventory(Lab(lab_dir, exps))
+    lab = Lab(lab_dir, exps)
     removed, freed = 0, 0
-    for item in first["light"]:
-        fresh = inventory(Lab(lab_dir, exps))  # re-check §1 just before each removal
-        now = next((i for i in fresh["light"] if i["path"] == item["path"]), None)
-        if now is None:
-            print(f"skipped {item['path']}: no longer a light-clean item")
-            continue
-        err = _delete(Lab(lab_dir, exps), now["path"], now["kind"])
+    for item in inventory(lab)["light"]:  # one fresh inventory, taken just before the removals
+        err = _delete(lab, item["path"], item["kind"])
         if err:
-            print(f"kept {now['path']}: {err}")
+            print(f"kept {item['path']}: {err}")
             continue
         removed += 1
-        freed += now["bytes"]
-        print(f"removed {now['path']} ({human(now['bytes'])})")
+        freed += item["bytes"]
+        print(f"removed {item['path']} ({human(item['bytes'])})")
     if removed:
         print(f"light clean: removed {removed} item{'s' if removed != 1 else ''}, {human(freed)} freed; metrics, "
               "results and checkpoints are untouched")

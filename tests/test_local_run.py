@@ -81,7 +81,7 @@ def test_build_env_sets_mps_low_watermark_not_above_high():
     env = lr.build_env({"ram_gb": 8, "gpu_mem_gb": 6, "cpu_threads": 4}, APPLE, {})
     assert float(env["PYTORCH_MPS_LOW_WATERMARK_RATIO"]) <= float(env["PYTORCH_MPS_HIGH_WATERMARK_RATIO"])
     assert env["FREELAB_MAX_RAM_GB"] == "8" and env["FREELAB_GPU_MEM_GB"] == "6"
-    assert env["FREELAB_MACHINE_RAM_GB"] == "24" and env["MKL_NUM_THREADS"] == "4"
+    assert "FREELAB_MACHINE_RAM_GB" not in env and env["MKL_NUM_THREADS"] == "4"
 
 
 CUDA = {"gpu": {"kind": "cuda", "unified": False}, "ram_gb": 32}
@@ -128,7 +128,7 @@ def test_dry_run_env_holds_only_freelab_variables(tmp_path, monkeypatch, capsys)
     out = json.loads(text)
     assert "do-not-print" not in text and "/inherited/path" not in text
     assert set(out["env"]) <= {"FREELAB_MAX_RAM_GB", "FREELAB_GPU_MEM_GB", "FREELAB_THREADS",
-                               "FREELAB_MACHINE_RAM_GB", "OMP_NUM_THREADS", "MKL_NUM_THREADS", "PYTHONPATH",
+                               "OMP_NUM_THREADS", "MKL_NUM_THREADS", "PYTHONPATH",
                                "PYTORCH_MPS_HIGH_WATERMARK_RATIO", "PYTORCH_MPS_LOW_WATERMARK_RATIO",
                                "CUDA_VISIBLE_DEVICES"}
     assert out["when"] == "now" and out["max_minutes"] is None and out["window"] is None
@@ -359,3 +359,50 @@ def test_idle_minutes_shorter_than_the_default(tmp_path, monkeypatch, capsys):
 def test_idle_check_without_minutes_waits_15(tmp_path, monkeypatch, capsys, extra):
     assert idle_run(monkeypatch, tmp_path, dict(ALLOWANCE, idle_check=True, **extra), 14 * 60.0) == 3
     assert "idle for 15 minutes" in capsys.readouterr().out
+
+
+# --- 0.4.1: one launcher per run id, a bare --max-minutes, no night window -------------------------
+
+def test_a_second_launcher_for_the_same_run_is_refused(tmp_path, monkeypatch, capsys):
+    import runlib
+    exp, lab = setup_exp(tmp_path, FAKE_TRAIN)
+    run_dir = lab / "runs" / "r1"
+    run_dir.mkdir(parents=True)
+    (run_dir / runlib.LAUNCHER_MARKER).write_text(str(os.getpid()))   # a live launcher (this test's process)
+    assert run_main(monkeypatch, exp, lab) == 2
+    assert "already has a launcher" in capsys.readouterr().err and not (run_dir / "log.txt").exists()
+    (run_dir / runlib.LAUNCHER_MARKER).write_text("999999999")        # a launcher that is gone: a stale marker
+    assert run_main(monkeypatch, exp, lab) == 0
+    assert not (run_dir / runlib.LAUNCHER_MARKER).exists()            # removed when the launcher ends
+
+
+def test_the_launcher_marker_is_held_while_waiting_between_nights(tmp_path, monkeypatch):
+    import runlib
+    exp, lab = setup_exp(tmp_path, NIGHT_TRAIN)
+    clock = fake_clock(monkeypatch, datetime(2026, 9, 29, 6, 0))
+    run_dir = lab / "runs" / "r1"
+    seen = []
+    real_sleep = lr.time.sleep
+
+    def sleep(s):
+        seen.append(runlib.launcher_alive(run_dir))
+        real_sleep(s)
+    monkeypatch.setattr(lr, "time", types.SimpleNamespace(sleep=sleep))
+    assert run_main(monkeypatch, exp, lab, "--when", "night", "--nights", "2") == 0
+    assert seen and all(seen) and clock[0] == datetime(2026, 9, 30, 0, 5)
+    assert not (run_dir / runlib.LAUNCHER_MARKER).exists()
+
+
+@pytest.mark.parametrize("flags", [[], ["--when", "night"]])
+def test_a_bare_max_minutes_in_the_experiment_args_is_refused(tmp_path, monkeypatch, capsys, flags):
+    exp, lab = setup_exp(tmp_path, FAKE_TRAIN)
+    monkeypatch.setattr(lr, "_now", lambda: datetime(2026, 9, 29, 6, 0))
+    assert run_main(monkeypatch, exp, lab, *flags, extra=["--smoke", "--max-minutes"]) == 2
+    assert "has no value" in capsys.readouterr().err and not (lab / "runs" / "r1").exists()
+
+
+def test_night_without_a_night_window_exit_2(tmp_path, monkeypatch, capsys):
+    exp, lab = setup_exp(tmp_path, FAKE_TRAIN)
+    resources.save_allowance({k: v for k, v in ALLOWANCE.items() if k != "night_window"})
+    assert run_main(monkeypatch, exp, lab, "--when", "night") == 2
+    assert "no night window" in capsys.readouterr().err

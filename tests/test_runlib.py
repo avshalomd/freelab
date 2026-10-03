@@ -263,3 +263,23 @@ def test_finish_after_a_stop_keeps_two_checkpoints(tmp_path):
         run.should_stop()
         run.finish({})  # an experiment that writes a summary after stopping still stays resumable
     assert _ckpt_names(run) == ["step-00000100", "step-00000200"]
+
+
+# --- 0.4.1 ---------------------------------------------------------------------------------------
+
+def test_atomic_write_is_utf8_and_leaves_no_temporary_file(tmp_path):
+    import runlib
+    target = tmp_path / "status.txt"
+    runlib.atomic_write(target, "failed: Café ✓\n")
+    assert target.read_bytes() == "failed: Café ✓\n".encode("utf-8")
+    assert [p.name for p in tmp_path.iterdir()] == ["status.txt"]
+
+
+def test_launcher_alive(tmp_path):
+    import os, runlib
+    assert runlib.launcher_alive(tmp_path) is False                  # no marker
+    marker = tmp_path / runlib.LAUNCHER_MARKER
+    for text, alive in ((str(os.getpid()), True), ("999999999", False), ("0", False), ("-1", False),
+                        ("", False), ("x", False)):
+        marker.write_text(text)
+        assert runlib.launcher_alive(tmp_path) is alive, text

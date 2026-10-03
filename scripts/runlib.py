@@ -23,9 +23,15 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def _atomic_write(path: Path, text: str) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text)
+def atomic_write(path, text: str) -> None:
+    """Write `text` to `path` as UTF-8, atomically: a temporary file beside it, flushed to disk, then a rename.
+    freelab's scripts (poll, status_page, resources, local_run) share this one."""
+    path = Path(path)
+    tmp = path.with_name(path.name + ".tmp")
+    with tmp.open("w", encoding="utf-8") as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
     os.replace(tmp, path)
 
 
@@ -42,6 +48,21 @@ def has_checkpoint(ckpt_dir) -> bool:
     """Whether --resume has something to resume: a complete step-* checkpoint, or a complete .old-step-* one
     (an interrupted same-step overwrite that Run.latest_checkpoint() restores)."""
     return bool(complete_checkpoints(ckpt_dir)) or any(Path(ckpt_dir).glob(".old-step-*/COMPLETE"))
+
+
+LAUNCHER_MARKER = ".launcher"  # lab/runs/ID/.launcher: the pid of the local launcher (backends/local_run.py)
+
+
+def launcher_alive(run_dir) -> bool:
+    """Whether the local launcher of this run is still alive (waiting for a night window or running it)."""
+    try:
+        pid = int((Path(run_dir) / LAUNCHER_MARKER).read_text(encoding="utf-8").split()[0])
+        if pid <= 0:
+            return False
+        os.kill(pid, 0)
+    except (OSError, ValueError, IndexError):
+        return False
+    return True
 
 
 # --- the allowance guard (local runs only) ----------------------------------------------------
@@ -81,12 +102,12 @@ def rss_gb() -> float | None:
     try:
         status = Path("/proc/self/status")
         if status.exists():
-            for line in status.read_text().splitlines():
+            for line in status.read_text(encoding="utf-8", errors="replace").splitlines():
                 if line.startswith("VmRSS:"):
                     return int(line.split()[1]) / 2**20
         elif sys.platform == "darwin":
-            out = subprocess.run(["ps", "-o", "rss=", "-p", str(os.getpid())], capture_output=True, text=True,
-                                 timeout=10).stdout
+            out = subprocess.run(["ps", "-o", "rss=", "-p", str(os.getpid())], capture_output=True, encoding="utf-8",
+                                 errors="replace", timeout=10).stdout
             return int(out.strip()) / 2**20
     except (OSError, ValueError, subprocess.SubprocessError):
         pass
@@ -105,11 +126,13 @@ def swap_used_gb() -> float | None:
     """GB of swap in use on the whole system, or None if it cannot be read."""
     try:
         if sys.platform == "darwin":
-            out = subprocess.run(["sysctl", "-n", "vm.swapusage"], capture_output=True, text=True, timeout=10).stdout
+            out = subprocess.run(["sysctl", "-n", "vm.swapusage"], capture_output=True, encoding="utf-8",
+                                 errors="replace", timeout=10).stdout
             return parse_swapusage(out)
         meminfo = Path("/proc/meminfo")
         if meminfo.exists():
-            kb = {l.split(":")[0]: int(l.split()[1]) for l in meminfo.read_text().splitlines()
+            text = meminfo.read_text(encoding="utf-8", errors="replace")
+            kb = {l.split(":")[0]: int(l.split()[1]) for l in text.splitlines()
                   if l.startswith(("SwapTotal:", "SwapFree:"))}
             return (kb["SwapTotal"] - kb["SwapFree"]) / 2**20
     except (OSError, ValueError, KeyError, IndexError, subprocess.SubprocessError):
@@ -118,12 +141,12 @@ def swap_used_gb() -> float | None:
 
 
 def read_metrics(path) -> list[dict]:
-    """Read a metrics.jsonl file, skipping blank and torn (incomplete) lines."""
+    """Read a JSONL file (metrics.jsonl, ledger.jsonl), skipping blank and torn (incomplete) lines."""
     out: list[dict] = []
     p = Path(path)
     if not p.exists():
         return out
-    for line in p.read_text().splitlines():
+    for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
         line = line.strip()
         if not line:
             continue
@@ -198,11 +221,11 @@ class Run:
 
     def log(self, step: int, total: int, split: str, name: str, value: float) -> None:
         rec = {"t": _now(), "step": step, "total": total, "split": split, "name": name, "value": value}
-        with (self.out / "metrics.jsonl").open("a") as f:
+        with (self.out / "metrics.jsonl").open("a", encoding="utf-8") as f:
             f.write(json.dumps(rec) + "\n")
 
     def status(self, text: str) -> None:
-        _atomic_write(self.out / "status.txt", text + "\n")
+        atomic_write(self.out / "status.txt", text + "\n")
 
     def save(self, write_fn: Callable[[Path], None], step: int) -> Path:
         ckpt_dir = self.out / "ckpt"
@@ -210,7 +233,7 @@ class Run:
         tmpdir = Path(tempfile.mkdtemp(dir=ckpt_dir, prefix=".tmp-"))
         try:
             write_fn(tmpdir)
-            (tmpdir / "COMPLETE").write_text("")
+            (tmpdir / "COMPLETE").write_text("", encoding="utf-8")
         except Exception:
             shutil.rmtree(tmpdir, ignore_errors=True)
             raise
@@ -263,7 +286,7 @@ class Run:
         """Write summary.json and mark the run done. Keeps only the newest complete checkpoint (the final weights)
         unless the run was asked to stop (stop_reason set): then __exit__ marks it stopped and its KEEP checkpoints
         stay for --resume. A failed run never gets here."""
-        _atomic_write(self.out / "summary.json", json.dumps(summary))
+        atomic_write(self.out / "summary.json", json.dumps(summary))
         if self.stop_reason is None:
             self._keep_newest_only(self.out / "ckpt")
         self.status("done")
