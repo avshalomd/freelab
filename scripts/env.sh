@@ -4,6 +4,7 @@
 #                                 name not yet defined (any `NAME=` line); prints `added NAME`; never edits a line
 #   scripts/env.sh check NAME...  print `NAME: present` (non-empty value) or `NAME: missing`; exit 0 if all present
 # Run it from the project root. It is a bash script, so it works the same when called from zsh.
+set +xv  # first: under `bash -x` or `-v` the trace would print the values
 MARKER='# freelab: paste each value after the =, no quotes, no spaces'
 
 usage() {

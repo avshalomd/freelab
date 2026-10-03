@@ -12,7 +12,8 @@ blocks:
 - while lab/status.json lists a run as queued, starting or running: the session is waiting for it, not done;
 - while a research loop is active (the newest "research loop ..." event is "research loop started" (events are
   newest first), lab/results.tsv present, and no lab/report*.md newer than it): the loop reports at its end;
-- while a freelab poll (poll.py) runs in the background (the Stop input's `background_tasks`);
+- while a freelab poll (poll.py) runs in the background, if the Stop input carries a `background_tasks` list
+  (used only when Claude Code sends one; without it, the run states in lab/status.json decide);
 - for connection-check runs (ids starting `smoke-`).
 Any error allows the stop."""
 from __future__ import annotations

@@ -3,6 +3,7 @@
 # Usage (from the project root): scripts/withenv CMD [ARGS...]
 # If ./.env exists it is loaded with `set -a; . ./.env; set +a` (its own output silenced), then CMD replaces
 # this shell. Never prints a value; the command itself must not print one either.
+set +xv  # first: under `bash -x` or `-v` the trace would print the values
 if [ "$#" -eq 0 ]; then
   echo "usage: withenv CMD [ARGS...]" >&2
   exit 2

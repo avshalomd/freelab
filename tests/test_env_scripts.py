@@ -87,3 +87,13 @@ def test_withenv_without_env_and_exit_code(tmp_path):
     assert r.returncode == 7
     r = subprocess.run([str(WITHENV)], cwd=tmp_path, capture_output=True, text=True)
     assert r.returncode == 2 and "usage" in r.stderr
+
+
+@pytest.mark.parametrize("flags", ["-x", "-xv", "-v"])
+def test_tracing_never_prints_a_value(tmp_path, flags):
+    """`bash -x scripts/env.sh check NAME` would trace the value; both scripts turn tracing off first."""
+    (tmp_path / ".env").write_text(f"A={SECRET}\n")
+    r = subprocess.run(["bash", flags, str(ENV_SH), "check", "A"], cwd=tmp_path, capture_output=True, text=True)
+    assert r.stdout == "A: present\n" and SECRET not in r.stdout + r.stderr
+    r = subprocess.run(["bash", flags, str(WITHENV), "true"], cwd=tmp_path, capture_output=True, text=True)
+    assert r.returncode == 0 and SECRET not in r.stdout + r.stderr

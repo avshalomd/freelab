@@ -10,7 +10,7 @@ launch does not use up its cost estimate. The Bash `tool_response` holds stdout,
 exit code; if a response does carry an error flag or a non-zero exit code, the launch is not recorded. When success
 cannot be told (a background command, an interrupted one), the launch is recorded: the gate then asks for a new
 estimate, the safe side. Which commands count is guard.gated_launch (smoke runs and `--help` do not; a heredoc
-body that only writes a file is text, not a launch).
+body that only writes a file is text, not a launch, while one fed to a shell, `bash <<EOF`, is commands).
 Any error: no record, exit 0."""
 from __future__ import annotations
 import sys
@@ -19,7 +19,7 @@ from pathlib import Path
 sys.dont_write_bytecode = True  # no __pycache__ inside the installed plugin
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from hooklib import hook_cwd, uses_freelab, read_input  # noqa: E402
-from guard import gated_launch, record_launch, segments  # noqa: E402
+from guard import all_segments, gated_launch, record_launch  # noqa: E402
 
 EXIT_KEYS = ("exit_code", "exitCode", "returncode", "returnCode", "code")
 
@@ -50,7 +50,7 @@ def evaluate(data: dict) -> str | None:
     command = ti.get("command") if isinstance(ti, dict) else None
     if not isinstance(command, str) or not command.strip():
         return None
-    launch = gated_launch(segments(command), cwd)
+    launch = gated_launch(all_segments(command), cwd)
     if launch is None or failed(data.get("tool_response")):
         return None
     record_launch(Path(cwd) / "lab", launch[0])
