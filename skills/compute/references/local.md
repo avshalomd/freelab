@@ -40,17 +40,15 @@ uv run --with-requirements ${CLAUDE_PLUGIN_ROOT}/examples/banking77-laya/require
 - One local run at a time: a second launch exits 2 naming the run that holds the lock
   (`local-run.lock` in `$FREELAB_HOME`, default `~/.freelab`). A night run takes the lock only when it starts.
 - **Warm start** (a Train longer round, `plan` §1): a new run id NEW, with ARGS
-  `--init-from "$PWD/lab/runs/OLD/ckpt/step-N" --epochs 1 --lr-scale 0.5` (OLD's final checkpoint, an absolute
-  path).
+  `--init-from "$PWD/lab/runs/OLD/ckpt/step-N" --epochs 1 --lr-scale 0.5 --skip-test` (OLD's final checkpoint, an
+  absolute path); the chosen round's scoring run (`NEW-test`) drops `--skip-test`.
 - The allowance reaches the run as `FREELAB_MAX_RAM_GB`, `FREELAB_GPU_MEM_GB` and `FREELAB_THREADS`. A GPU
   allowance of 0 means no GPU: CUDA is hidden and the run uses the CPU.
 
 ## Watch, fetch, stop
 
-- Watch with the poll, started with Bash `run_in_background` after the launch:
-  `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/poll.py local ID --expected-minutes M`. It reads `lab/runs/ID/` (nothing
-  to fetch), updates the status page, prints only validation lines and exits when `status.txt` reads `done`,
-  `stopped (...)` or `failed: ...`. Errors are in `lab/runs/ID/log.txt`.
+- Watch with the poll (`status` §5): `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/poll.py local ID --expected-minutes M`.
+  It reads `lab/runs/ID/` in place (nothing to fetch). Errors are in `lab/runs/ID/log.txt`.
 - One look by hand: `cat lab/runs/ID/status.txt`. In a research loop, never `tail` the whole `metrics.jsonl`
   (its last lines hold the test results at the end of a run): `grep '"split": "val"' lab/runs/ID/metrics.jsonl |
   tail -n 2`, and `"split": "train"` for the step.

@@ -29,7 +29,9 @@ explanation is in your message.
   type the first run used (the quick start: Modal's L4, a T4 on Kaggle and Lightning AI), so that run can be the
   baseline. The per-experiment budget is the baseline's minutes on that type (model and
   data downloads count) plus runlib's 2-minute margin (it stops a run 2 minutes before `--max-minutes`), with some
-  headroom. The quick start's loop values are in the shipped charter's "Next: try to beat it".
+  headroom; a time stop rule uses each experiment's estimate, never this cap. The frozen parts include how the
+  splits are drawn (the seed, the per-class counts), so every experiment is judged on the same validation items.
+  The quick start's loop values are in the shipped charter's "Next: try to beat it".
 - **Metric, target and budget are never blank.** The target is a number with a direction (`accuracy >= 0.80`).
   The budget is USD beyond free credit (default 0) and wall-clock hours.
 - **Work out the plan first** (§2: stages, placement, estimates), so the totals come from it. Write both files

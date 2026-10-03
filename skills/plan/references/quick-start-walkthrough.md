@@ -61,7 +61,7 @@ calls this the **charter**. Here are the decisions, with what I recommend and wh
   nothing of your money. A hard cap stops it at 20 minutes.
 - Why: <Provider> is connected and its check passed. A GPU makes this run take minutes instead of the better part
   of an hour.
-- Alternatives: <another connected provider and how it compares, e.g. Modal's L4 finished in 9 minutes; Modal and
+- Alternatives: <another connected provider and how it compares, e.g. Modal's L4 takes about 10 minutes end to end; Modal and
   Lightning use free credit, Kaggle uses none and shows the progress live but the charts only at the end>; this
   computer (free, but about 10 minutes for only half the training: the 1-epoch run on this computer reached
   0.767, under the 0.80 target, and it keeps your computer busy).
@@ -72,8 +72,8 @@ calls this the **charter**. Here are the decisions, with what I recommend and wh
   with settings picked earlier); it stops after the 2 epochs or at 20 minutes, and the result is reported as
   measured, even under the target.
 - Why: one run changes nothing, so the comparison is clean. Tuning settings is a separate experiment.
-- Alternative: let it tune settings now (that is the research loop, offered after this run: a short one of about
-  15-20 minutes, a few runs).
+- Alternative: let it tune settings now (that is the research loop, offered after this run: a short one of at
+  most 2 experiments, about 10-17 minutes on Modal's L4).
 - For you: one clean answer now; improving it is the optional next step.
 
 **The plan.** One stage: the training run on <Provider>. While it runs, a live status page opens: what is

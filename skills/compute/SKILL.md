@@ -1,6 +1,6 @@
 ---
 name: compute
-description: Use when a freelab lab needs compute - "how much of my machine can the lab use", "run the lab on a GPU", "run it tonight", "launch the run", "fetch the results", "the run was preempted", "move the run to another backend", "out of Kaggle quota". Places, launches, fetches, moves and recovers lab runs.
+description: Use when a freelab lab needs compute - "how much of my machine can the lab use", "run the lab on a GPU", "run it tonight", "launch the run", "fetch the results", "the run was preempted", "move the run to another backend", "out of Kaggle quota". Places, launches, fetches, moves and recovers lab runs. Not for CI, builds or deploys.
 ---
 
 # compute: this machine and the cloud
@@ -14,10 +14,10 @@ service's own CLI; there is no cloud launcher script. This machine is in
 
 ## 1. The local allowance (first use)
 
-If `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/resources.py show` exits 2 (no allowance yet), set it with the `onboard`
-skill's step 3, **This machine**: plain-language presets from `resources.py presets` (day Low, Medium or High;
-night Full, Partial or None; the night window and idle wait), asked with AskUserQuestion, with Custom numbers
-allowed.
+Only a run on this machine needs the allowance. If `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/resources.py show` exits
+2 (no allowance yet), set it with the `onboard` skill's step 3, **This machine** (plain-language presets from
+`resources.py presets`, asked with AskUserQuestion, Custom numbers allowed). Before the first local run, say the
+stored allowance in one line (it may be onboarding's defaults) and offer to change it.
 
 It is kept in `$FREELAB_HOME/local.json` (default `~/.freelab/local.json`). To change it later, the same presets
 or explicit numbers (which override the preset):
@@ -31,7 +31,7 @@ free quota. "Tonight" is offered as a choice, never picked silently.
 
 For each stage: `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/resources.py check --ram GB --gpu-mem GB --hours H [--cloud-available] [--prefer cloud|local]`.
 Add `--cloud-available` when a charter-allowed cloud backend has passed its smoke and has free credit left; then
-it answers `cloud`. Add `--prefer local` when the user asked for this machine or the job would burn the free
+it answers `cloud`, with or without a local allowance. Add `--prefer local` when the user asked for this machine or the job would burn the free
 quota. It prints `{"place", "why", "nights"}`:
 
 - **cloud:** "I'll run it on BACKEND, about USD X of free credit." Pick a backend the charter allows and that is
@@ -67,18 +67,15 @@ CLI or key goes back to onboarding.
    launches are theirs and not gated.
 2. **Keys:** every CLI call that needs a key runs as `${CLAUDE_PLUGIN_ROOT}/scripts/withenv CMD...`, which loads
    `.env` into that command only. In a chain, each command gets its own `withenv`.
-3. **Launch** from the reference. The templates (the Modal app, the Kaggle kernel files) are written into
-   `lab/backends/`; outputs are fetched to `lab/runs/ID/`.
+3. **Launch** from the reference. The Modal app and the Kaggle runner are copied from
+   `${CLAUDE_PLUGIN_ROOT}/scripts/backends/templates/` into `lab/backends/`; outputs are fetched to `lab/runs/ID/`.
 4. **Give the user the run's page** on the provider, from the reference: Modal prints its
    `https://modal.com/apps/...` link at launch; Kaggle's is `https://www.kaggle.com/code/KAGGLE_USERNAME/freelab-ID`;
    Lightning's is in its reference. Say what it shows (the provider's own log and state).
-5. **Watch** with the poll, started with Bash `run_in_background` right after the launch:
-   `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/poll.py BACKEND ID --expected-minutes M --link URL` (plus the
-   reference's extra flags). It re-renders the status page on every check and prints only validation lines;
-   the cadence is in the `status` skill, §5. You are notified when it exits: `0` done, `3` stopped, `1` failed
-   (or it gave up after `--max-hours`: check the run by hand).
-6. **When it exits:** `0`: the small files are already in `lab/runs/ID/` (a checkpoint is fetched only when it
-   is needed); `status` updates `best` and the spend, then `report`. `3` or `1`: section 7.
+5. **Watch** with the poll right after the launch (`status` §5: the command, cadence and exit codes; the
+   reference adds its backend's flags).
+6. **When it exits:** `0`: the small files are in `lab/runs/ID/` (a checkpoint is fetched only when needed);
+   `status` updates `best` and the spend, then `report`. `3` or `1`: section 7.
 
 ## 5. Moving between backends
 
@@ -115,12 +112,11 @@ the last one), and the actual cost once known:
   (a new job with `--resume`). Each relaunch logs its own estimate first. Preemption notes are in each
   reference's **Move in / out**. `stopped (allowance)` (local) goes to the user (section 2), not straight back
   into a relaunch.
-- **`failed: ...`** (poll exit 1): read the log (`modal app logs`, `lightning job logs`, the log Kaggle's fetch
+- **`failed: ...`** (poll exit 1; if the files could not be fetched, fetch them by hand first): read the log (`modal app logs`, `lightning job logs`, the log Kaggle's fetch
   brings); fix a bug, verify with a smoke run, relaunch. A design question goes to the user.
 - Add a status event (`status` §2) and say what happened in the next update.
 
 ## 8. Secrets
 
-Lab rule 1, enforced by the guard hook. Here: keys reach a command only through `withenv` (section 4). EXP never
-holds `.env` or any key file: every upload (the Modal image, the Lightning Studio, the Kaggle Dataset) copies EXP
-whole. If EXP is the project root, stage a copy without them first.
+`lab` rule 1. EXP never holds `.env` or a key file: every upload (the Modal image, the Lightning Studio, the
+Kaggle Dataset) copies EXP whole, so if EXP is the project root, stage a copy without them first.

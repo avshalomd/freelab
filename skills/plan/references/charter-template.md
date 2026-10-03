@@ -12,10 +12,11 @@
 - **Decision GPU type:** <one GPU type for the baseline and every keep or discard; default: the GPU type the first
   run used, so that run can be the baseline>
 - **Editable surface:** <what experiments may change, e.g. `train.py`>
-- **Frozen:** <what no experiment touches: data loading, evaluation, the test split>
+- **Frozen:** <what no experiment touches: data loading, evaluation, how the splits are drawn (seed, per-class
+  counts), the test split>
 - **Per-experiment budget:** <minutes per experiment, passed as `--max-minutes`: the baseline's minutes on the
   decision GPU type (model and data downloads count) plus 2 (runlib stops a run 2 minutes before
-  `--max-minutes`), with some headroom>
+  `--max-minutes`), with some headroom; and the estimate per experiment, which time stop rules use>
 - **Stop rules:** <e.g. the target is met on validation; the budget or free credit is spent; K non-improving
   experiments in a row (default 8)>
 - **Out of scope:** <what this lab will not try>

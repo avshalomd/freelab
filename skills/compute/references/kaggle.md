@@ -1,8 +1,7 @@
 # Kaggle
 
 Free GPU hours with no card. You drive it with the `kaggle` CLI: the code travels as a private Dataset, and each
-run is a private GPU script kernel. Each command that needs a key runs through
-`${CLAUDE_PLUGIN_ROOT}/scripts/withenv`, which loads `.env` for that command only. Below, KAGGLE_USERNAME is the
+run is a private GPU script kernel. Keys: `lab` rule 1 (through `${CLAUDE_PLUGIN_ROOT}/scripts/withenv`). Below, KAGGLE_USERNAME is the
 user's Kaggle user name: ask for it once (it is not a secret) and write it into the JSON files; never read it from
 `.env`.
 
@@ -32,7 +31,7 @@ model · Clean up · Gotchas
 3. **Key:** Settings (https://www.kaggle.com/settings) → API → "Generate New Token"; it starts with `KGAT`
    (https://www.kaggle.com/docs/mcp, checked 2026-09-28). When driving the browser, stop here: the human presses
    "Generate New Token" and copies it. You add this line to the project's `.env` with an empty value (`onboard`
-   step 2), and the human pastes the value:
+   step 5f), and the human pastes the value:
 
    ```
    KAGGLE_API_TOKEN=KGAT...
@@ -84,27 +83,12 @@ a letter, a digit or `-` replaced by `-`; EXP itself is a path and never goes in
     "dataset_sources": ["KAGGLE_USERNAME/freelab-SLUG"], "machine_shape": "NvidiaTeslaT4"}
    ```
 
-   and `run.py` (fill `ARGS`; `--max-minutes` is the run's budget):
-
-   ```python
-   """freelab run on Kaggle, written from skills/compute/references/kaggle.md."""
-   import shutil, subprocess, sys
-   from pathlib import Path
-
-   ARGS = ["--max-minutes", "20", "--smoke"]
-   src = next(Path("/kaggle/input").rglob("train.py")).parent  # the attached private Dataset
-   exp, out = Path("/tmp/freelab-exp"), Path("/kaggle/working")
-   shutil.copytree(src, exp, ignore=shutil.ignore_patterns("ckpt"))
-   if (src / "ckpt").is_dir():  # a checkpoint uploaded for a resume or a move
-       shutil.copytree(src / "ckpt", out / "ckpt", dirs_exist_ok=True)
-       if (src / "metrics.jsonl").is_file():  # the run's history so far, so metrics continue
-           shutil.copy(src / "metrics.jsonl", out / "metrics.jsonl")
-       ARGS.append("--resume")
-   if subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r", "requirements.txt"], cwd=exp).returncode:
-       sys.exit(1)
-   code = subprocess.run([sys.executable, "-u", "train.py", "--out", str(out), *ARGS], cwd=exp).returncode
-   sys.exit(code if code >= 0 else 1)
-   ```
+   and `run.py`, copied from freelab's template:
+   `cp "${CLAUDE_PLUGIN_ROOT}/scripts/backends/templates/kaggle_run.py" lab/backends/kaggle-ID/run.py`.
+   Then set its one placeholder, the `ARGS = [...]` line: `train.py`'s arguments for this run, where
+   `--max-minutes` is the run's budget (the template holds the smoke's `["--max-minutes", "20", "--smoke"]`).
+   `run.py` copies the code out of the attached Dataset, installs `requirements.txt`, adds `--resume` when the
+   Dataset holds a `ckpt/`, and runs `train.py --out /kaggle/working`.
 3. **Push**, once this launch's estimate is logged (`compute` §6), with a timeout of the run's minutes + 10, in seconds:
    `${CLAUDE_PLUGIN_ROOT}/scripts/withenv kaggle kernels push -p lab/backends/kaggle-ID -t SECONDS --accelerator NvidiaTeslaT4`
 4. **The run's link and the poll.** Give the user the run's page, https://www.kaggle.com/code/KAGGLE_USERNAME/freelab-ID
@@ -118,7 +102,7 @@ a P100, try `NvidiaTeslaT4Highmem` or a value the error lists, and record what w
 
 ## Watch, fetch, stop
 
-- **Watch** with the poll, started with Bash `run_in_background` right after the push:
+- **Watch** with the poll (`status` §5), right after the push:
   `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/poll.py kaggle ID --expected-minutes M` (it reads OWNER/SLUG from
   `lab/backends/kaggle-ID/kernel-metadata.json` and links the run's page; a resumed kernel `ID-r<N>` adds
   `--kernel KAGGLE_USERNAME/freelab-ID-r<N>`). Each check reads `kaggle kernels status` (queued, running,
@@ -128,13 +112,12 @@ a P100, try `NvidiaTeslaT4Highmem` or a value the error lists, and record what w
   end of the run: the poll restarts it up to 3 times, and only `kernels status` says the run ended (to verify
   live: `kernels logs -f` is from the kaggle 2.x source and `--help`, not yet tried on a run).
 - **The small files** come once the kernel has ended: the poll fetches them with a pattern, so when it exits 0
-  they are in `lab/runs/ID/`. By hand:
+  they are in `lab/runs/ID/`; when it exits 1 saying they could not be fetched, fetch them by hand:
   `${CLAUDE_PLUGIN_ROOT}/scripts/withenv kaggle kernels output KAGGLE_USERNAME/freelab-ID -p
   lab/runs/ID --file-pattern '^(metrics\.jsonl|status\.txt|summary\.json|config\.json|.*\.log)$'`.
   `--file-pattern` is a Python regex searched in each output file's relative name (`metrics.jsonl`,
   `ckpt/step-00000290/state.pt`). They land flat in `lab/runs/ID/` within seconds. A fetch without the pattern
-  brings the checkpoint first: in the trial it downloaded about 2 GB and took about 10 minutes before the small
-  files arrived.
+  brings the checkpoint first: measured, about 2 GB and about 10 minutes before the small files arrived.
 - The log saved so far, by hand: `${CLAUDE_PLUGIN_ROOT}/scripts/withenv kaggle kernels logs KAGGLE_USERNAME/freelab-ID`.
 - **Fetch the final checkpoint** only when it is needed: the demo, a warm start (a Train longer round, `plan`
   §1), a resume or a move. N is the run's last step in 8 digits (`step-00000290` for the quick start's full run, whose
@@ -157,8 +140,9 @@ a P100, try `NvidiaTeslaT4Highmem` or a value the error lists, and record what w
 - **Warm start** (a Train longer round, `plan` §1), a new run id NEW from the finished run OLD: fetch OLD's final
   checkpoint (Watch, fetch, stop), copy `lab/runs/OLD/ckpt/step-N/` to `lab/backends/kaggle-data-SLUG/init/step-N/`
   (not `ckpt/`, which `run.py` treats as a resume), `datasets version`, wait for `ready`, and push kernel NEW with
-  `ARGS = ["--max-minutes", "20", "--init-from", "init/step-N", "--epochs", "1", "--lr-scale", "0.5"]` (`run.py`
-  copies `init/` next to `train.py`). Remove `init/` and version the Dataset again before a run that is not a
+  `ARGS = ["--max-minutes", "20", "--init-from", "init/step-N", "--epochs", "1", "--lr-scale", "0.5",
+  "--skip-test"]` (`run.py` copies `init/` next to `train.py`). The chosen round's scoring run (kernel
+  `NEW-test`) uses the same ARGS without `"--skip-test"`, so keep `init/` until it has run. Remove `init/` and version the Dataset again before a run that is not a
   warm start from OLD.
 - **Preemption:** Kaggle does not restart a kernel. A run stopped by the 12-hour limit or the timeout resumes only
   by Move in.

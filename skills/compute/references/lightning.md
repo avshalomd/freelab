@@ -1,9 +1,8 @@
 # Lightning AI
 
 Free credits and T4/L4 jobs without a session limit. You drive it with the `lightning` CLI: the code lives in a
-Studio named `freelab`, and each run is a job started from a snapshot of it. Each command that needs a key runs
-through `${CLAUDE_PLUGIN_ROOT}/scripts/withenv`, which loads `.env` for that command only; in a chain (`a && b`),
-each command gets its own.
+Studio named `freelab`, and each run is a job started from a snapshot of it. Keys: `lab` rule 1 (through
+`${CLAUDE_PLUGIN_ROOT}/scripts/withenv`, one per command in a chain).
 
 Contents: TEAMSPACE · Free tier · Onboarding (0 Signed in already?, 3 Spending cap: there is none, 4 Key, 5 CLI,
 6 Teamspace, 7 Official skills) · Connection check · Launch (1 the Studio, 2 upload, 3 run the job, the run's
@@ -20,7 +19,7 @@ not find the teamspace by itself. Onboarding keeps it in the onboarded marker as
   phone verification; adding a card gives 25 more: "up to 30 free credits to start". The current pages read as a
   one-time grant; an older docs page describes a monthly top-up to 15 (unconfirmed). Unused credits expire after
   12 months. Read the balance on lightning.ai before a long run.
-- **Measured:** in the first trial a T4 job billed about **$0.90 an hour** (the pricing table lists $0.55), so the
+- **Measured** (2026-10): a T4 job billed about **$0.90 an hour** (the pricing table lists $0.55), so the
   quick start's measured time and cost are in `${CLAUDE_PLUGIN_ROOT}/examples/banking77-laya/charter.md`, **Budget**.
   30 credits are about 30 T4 hours of jobs.
 - "80 free GPU hours" (Studio docs) counts interruptible machines and is a Studio offer, not job time.
@@ -51,7 +50,7 @@ not find the teamspace by itself. Onboarding keeps it in the onboarded marker as
    (https://lightning.ai/docs/overview/ai-studio/sdk, checked 2026-09-28). When driving the browser, stop at
    Global Settings and take no screenshot: the human opens Keys, reveals and copies the key, and says when it is
    off the screen. You add these lines to the project's
-   `.env` with empty values (`onboard` step 2), and the human pastes the values:
+   `.env` with empty values (`onboard` step 5f), and the human pastes the values:
 
    ```
    LIGHTNING_USER_ID=...
@@ -109,18 +108,18 @@ passes when `status.txt` reads `done` and `metrics.jsonl` holds `val` and `test`
 
 ## Watch, fetch, stop
 
-- **Watch** with the poll, started with Bash `run_in_background` right after the launch:
+- **Watch** with the poll (`status` §5), right after the launch:
   `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/poll.py lightning ID --expected-minutes M --link URL` (TEAMSPACE comes
   from `lightning_teamspace` in the onboarded marker, else `--teamspace TEAMSPACE`; a resumed job adds
   `--job ID-r<N>`). Each check runs `lightning job inspect JOB --teamspace TEAMSPACE` and copies `status.txt`,
   `metrics.jsonl` and `summary.json` from `lit://TEAMSPACE/jobs/JOB/freelab-runs/ID/` into `lab/runs/ID/` (copying
-  from a running job worked in the first trial).
+  from a running job works, measured).
 - **How the poll reads the state:** it takes the first `status`, `state` or `phase` text in the `inspect` JSON (the
   key and its values are to verify live): pending, queued, starting or provisioning → queued; running → running;
   completed, succeeded, finished or done → ended; failed or error → ended with an error; stopped or cancelled →
   ended, stopped. While the job runs, the run's own `status.txt` gives the detail. Once the job has ended, the
   fetched `status.txt` says how (`done`, `stopped (...)`, `failed: ...`); if it cannot be fetched after a few
-  checks, the poll ends the run from the job's state and says to fetch it by hand.
+  checks, the poll ends the run as failed (exit 1) and says to fetch it by hand.
 - Logs: `${CLAUDE_PLUGIN_ROOT}/scripts/withenv lightning job logs ID --teamspace TEAMSPACE --tail 20` (`-f` to
   follow). The quick start's `train.py` prints a progress line at least every 25 steps.
 - Status and cost as JSON: `${CLAUDE_PLUGIN_ROOT}/scripts/withenv lightning job inspect ID --teamspace TEAMSPACE`.
@@ -145,7 +144,8 @@ passes when `status.txt` reads `done` and `metrics.jsonl` holds `val` and `test`
   its final checkpoint into the Studio,
   `${CLAUDE_PLUGIN_ROOT}/scripts/withenv lightning cp -r lab/runs/OLD/ckpt/step-N/
   lit://TEAMSPACE/studios/freelab/freelab-init/OLD/step-N/`, then run NEW with the usual command plus
-  `--init-from ~/freelab-init/OLD/step-N --epochs 1 --lr-scale 0.5` (to verify live). The upload counts toward
+  `--init-from ~/freelab-init/OLD/step-N --epochs 1 --lr-scale 0.5 --skip-test` (to verify live); the chosen
+  round's scoring run (job `NEW-test`) runs the same command without `--skip-test`. The upload counts toward
   the 10 GB of free storage: delete `freelab-init/OLD/` in the Studio afterwards (Clean up).
 
 ## Cost model
@@ -153,7 +153,7 @@ passes when `status.txt` reads `done` and `metrics.jsonl` holds `val` and `test`
 Billed per second of machine time from the credits; storage over 10 GB is billed daily. Estimate
 `minutes / 60 × hourly price`, with about $0.90 an hour for a T4 (measured; the list price is lower), and log it
 in the ledger (even on free credits); `inspect` shows `total_cost` afterwards. Count machine setup and install
-(about 3 minutes in the trial). The free storage is about 10 GB, and each job keeps its checkpoints as
+(about 3 minutes, measured). The free storage is about 10 GB, and each job keeps its checkpoints as
 artifacts (once a run finishes, runlib keeps only its final checkpoint: the quick start's full run about 2.1 GB,
 its smoke about 0.6 GB), so a few runs fill it: after
 fetching, tell the user which old job artifacts they can delete (Clean up below). A research loop runs many

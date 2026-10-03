@@ -5,7 +5,8 @@ description: Use when freelab is not set up yet or the user wants more free comp
 
 # onboard: set up freelab
 
-If the `lab` skill isn't loaded this session, load it first: it holds the rules (secrets: rule 1). Each
+If the `lab` skill isn't loaded this session, load it first: it holds the rules (secrets: rule 1; the key
+procedure is step 5f here). Each
 service's facts (pages, key names, CLI, money, checks) are in its reference file,
 `${CLAUDE_PLUGIN_ROOT}/skills/compute/references/kaggle.md`, `.../lightning.md` and `.../modal.md`, under
 **Free tier**, **Onboarding**, **Connection check** and **Cost model**. The human may know nothing about GPUs:
@@ -24,40 +25,35 @@ no terminal (`lab` rule 11): you run every command; they act only in the browser
 
 Say, in three lines: freelab runs AI experiments for you; it trains on this computer or on free cloud GPUs and
 tells you plainly whether it worked; setup takes about 15 minutes, and you type every password, card and key
-yourself. Ask: **Set it up now** (Recommended), **Not now**, **Never**.
+yourself. When the user asked to set up ("set up freelab", "connect Modal"), go straight on. Otherwise (the
+session-start offer) ask: **Set it up now** (Recommended), **Not now**, **Never**.
 - **Not now:** say you won't bring it up again and that "set up freelab" starts it any time, then stop and go
   back to what the user was doing. Nothing to write: the session-start hook offers onboarding only once per machine.
 - **Never:** write the marker (step 6) with `"services": []`.
 
-## 2. Secrets first
+## 2. The project
 
+- **`lab/` is freelab's folder.** If `lab/` already exists and holds none of freelab's files (`charter.md`,
+  `ledger.jsonl`, `status.json`, `.launches`), it is the user's own folder: stop and ask before writing anything
+  there (freelab cannot use another folder name yet).
 - In a git repository (`git rev-parse --is-inside-work-tree` prints `true`), make sure `.env` and `lab/` are
   ignored: if `git check-ignore -q .env` fails, append `.env` to `.gitignore`; if `git check-ignore -q
-  lab/results.tsv` fails, append `lab/` (create `.gitignore` if it is missing). Outside a git repository, leave
+  lab/results.tsv` fails, append `lab/` (create `.gitignore` if missing). Say so in one line: ".gitignore now
+  lists .env and lab/, so keys and lab files are never committed". Outside a git repository, leave
   `.gitignore` alone.
-- **You create `.env` and its placeholders; the human only pastes the values.** Never ask the human to create
-  the file or type variable names. For a provider, run, with that provider's variable names from its reference
-  (Kaggle `KAGGLE_API_TOKEN`; Lightning `LIGHTNING_USER_ID LIGHTNING_API_KEY`; Modal
-  `MODAL_TOKEN_ID MODAL_TOKEN_SECRET`):
-  `${CLAUDE_PLUGIN_ROOT}/scripts/env.sh add KAGGLE_API_TOKEN`.
-  It creates `.env` if missing (readable only by the user), adds a one-line comment and an empty `NAME=` line for
-  each name not yet in the file, prints `added NAME`, and never prints a value or changes an existing line.
-- Then give the human a clickable link to the file with its absolute path, `[.env](/abs/path/to/project/.env)`,
-  and offer to open it in their text editor (`open -t .env` on macOS, `xdg-open .env` on Linux; this opens the
-  editor, it does not read the file into this session). Say which line gets which value: `NAME=value`, one per
-  line, no spaces around `=`, no quotes; and that the file is hidden in Finder because its name starts with a
-  dot. When they say it is saved, check: `${CLAUDE_PLUGIN_ROOT}/scripts/env.sh check KAGGLE_API_TOKEN` prints
-  `present` or `missing` per name (an empty placeholder reads `missing`).
-- Tell the human: never paste a key into this chat (`lab` rule 1). If one is pasted anyway, do not repeat it;
-  they revoke it on the service and make a new one.
-- The marker (step 6) is per machine; keys are per project. In a new project, add the placeholders as above and
-  the human pastes the same values again (or uses the CLI's own sign-in). A CLI auth error (401, "unauthorized",
-  "credentials") means the key is missing from this project's `.env` or wrong.
+- The keys come later, at each provider's step (5f). The marker (step 6) is per machine; keys are per project:
+  in a new project the human pastes the same values again (or uses the CLI's own sign-in). A CLI auth error
+  (401, "unauthorized", "credentials") means the key is missing from this project's `.env` or wrong (5f).
 
 ## 3. This machine
 
-If `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/resources.py show` exits 0, say the stored presets in one line and ask
-**Keep them** (Recommended) or **Change them**. Otherwise, or on Change:
+How much of this computer freelab may use: it decides which runs stay here and which go to the cloud. If
+`python3 ${CLAUDE_PLUGIN_ROOT}/scripts/resources.py show` exits 0, say the stored presets in one line and ask
+**Keep them** (Recommended) or **Change them**. Otherwise ask one question: **Keep the defaults** (Recommended:
+daytime Low, you will not notice it; night Full, 23:00 to 07:00, after 15 idle minutes; asked again before any
+local run) or **Set them now**. Keep the defaults stores them:
+`python3 ${CLAUDE_PLUGIN_ROOT}/scripts/resources.py set --day-preset low --night-preset full --start 23:00 --end 07:00 --idle-minutes 15`.
+On Set them now or Change them:
 
 1. Run `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/resources.py presets`. Each option's description shows its numbers,
    e.g. "6 GB memory, 6 GB GPU memory, 3 CPU threads". No GPU (`gpu_mem_gb` 0): say "no GPU". On Apple Silicon,
@@ -93,7 +89,7 @@ b. **How:** ask **I'll drive your browser** (Recommended when a browser tool is 
    navigate the menus. The human types account details, password, phone code, card and any CAPTCHA, accepts
    terms and cookie banners, and presses the button that creates or reveals the key. You never click that
    button and never read the key from the page or a screenshot: stop before it, add the `.env` placeholders
-   (step 2), ask the human to press it and paste the key into the linked `.env`, and continue only once they say
+   (f), ask the human to press it and paste the key into the linked `.env`, and continue only once they say
    it is there and the key is off the screen.
 c. **Sign up** and verify the phone where the service asks.
 d. **Card** where needed. You never type payment details.
@@ -106,12 +102,23 @@ e. **Money safety**, from the reference's **Spending cap** step: explain it befo
      when credits run low, then stop workloads, and the card is charged only by auto-reload (off by default) or
      by buying credits; that is documented behaviour, not a written guarantee. Recommend: auto-reload OFF
      (Organization → Billing), a low-credit alert if Billing offers one, and revoking a leaked key at once.
-f. **Key:** where to create it (from the reference). Recommended: add the provider's placeholders with `env.sh
-   add` and give the link (step 2); the human pastes the values; check them with `env.sh check`. The
-   alternative, where the reference names it, is the CLI's own browser sign-in (`modal token new`, `kaggle auth
-   login`): you run it yourself, with Bash `run_in_background`, once the CLI is installed (g); it opens a
-   browser tab where the human signs in, and the CLI keeps its own credential (never open or print it). For
-   Lightning use the `.env` key: `lightning login` can fail from inside this session.
+f. **Key:** where to create it (from the reference). Recommended: the project's `.env`.
+   - **You create `.env` and its placeholders; the human only pastes the values.** Never ask the human to create
+     the file or type variable names. Run, with the provider's names (Kaggle `KAGGLE_API_TOKEN`; Lightning
+     `LIGHTNING_USER_ID LIGHTNING_API_KEY`; Modal `MODAL_TOKEN_ID MODAL_TOKEN_SECRET`):
+     `${CLAUDE_PLUGIN_ROOT}/scripts/env.sh add KAGGLE_API_TOKEN`. It creates `.env` if missing (chmod 600:
+     readable only by the user), adds an empty `NAME=` line for each name not yet there, prints `added NAME`, and
+     never prints a value or changes an existing line.
+   - Give a clickable link with the absolute path, `[.env](/abs/path/to/project/.env)`, and offer to open it in
+     their editor (`open -t .env` on macOS, `xdg-open .env` on Linux; this does not read it into this session).
+     Say which line gets which value: `NAME=value`, no spaces around `=`, no quotes; the file is hidden in Finder
+     because its name starts with a dot. When they say it is saved:
+     `${CLAUDE_PLUGIN_ROOT}/scripts/env.sh check KAGGLE_API_TOKEN` prints `present` or `missing` per name.
+   - Never paste a key into this chat (`lab` rule 1); a pasted one is revoked and replaced.
+   - The alternative, where the reference names it, is the CLI's own browser sign-in (`modal token new`,
+     `kaggle auth login`): you run it yourself, with Bash `run_in_background`, once the CLI is installed (g); it
+     opens a browser tab where the human signs in, and the CLI keeps its own credential (never open or print
+     it). For Lightning use the `.env` key: `lightning login` can fail from inside this session.
 g. **CLI:** first check the tools it needs: `command -v uv` (every CLI install and local run uses it) and, only
    when the user wants Lightning's official skills (i), `command -v npx`. A missing one: say what it is for and
    offer to install it; on a yes, you run the install: uv `curl -LsSf https://astral.sh/uv/install.sh | sh` (or

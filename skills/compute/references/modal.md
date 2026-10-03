@@ -1,17 +1,17 @@
 # Modal
 
 The first cloud choice: per-second billing, a detached run, and a Volume that keeps checkpoints between launches.
-You drive it with the `modal` CLI and one small app file you write into the lab. Each command that needs a key
-runs through `${CLAUDE_PLUGIN_ROOT}/scripts/withenv`, which loads `.env` for that command only.
+You drive it with the `modal` CLI and one small app file copied into the lab. Keys: `lab` rule 1 (every command
+that needs one runs through `${CLAUDE_PLUGIN_ROOT}/scripts/withenv`).
 
 Contents: Free tier · Onboarding (0 Signed in already?, 3 Spending cap: the Usage limit) · Connection check ·
-Launch (the app file, the launch line, the run's link) · Watch, fetch, stop (the poll) · Move in / out (Warm
+Launch (copy the app, the launch line, the run's link) · Watch, fetch, stop (the poll) · Move in / out (Warm
 start, Preemption) · Cost model · Clean up · Gotchas
 
 ## Free tier
 
 - The Starter plan includes **$30 a month** of free compute (https://modal.com/pricing, checked 2026-09-28).
-- **Card:** needed for the full $30; without one there is only a small credit (freelab's author saw $1). The
+- **Card:** needed for the full $30; without one there is only a small credit ($1, observed on a new account, 2026-10). The
   billing guide says "you must have a payment method on file in order to use Modal"
   (https://modal.com/docs/guide/billing, checked 2026-09-28).
 - A T4 is $0.000164/s (about $0.59/h), an L4 $0.000222/s (about $0.80/h) (pricing page, same date). CPU and memory
@@ -26,14 +26,14 @@ start, Preemption) · Cost model · Clean up · Gotchas
 1. **Sign up** at https://modal.com/signup.
 2. **Card:** the human adds one under Settings → Usage & billing ("Manage payment information"). You never
    type payment details.
-3. **Spending cap:** Modal calls it the **Usage limit**: Settings → Usage & billing → Usage limit (as seen in
-   freelab's third trial). It caps what Modal may charge the card in a month once the free credit is used
+3. **Spending cap:** Modal calls it the **Usage limit**: Settings → Usage & billing → Usage limit (observed on
+   a new account, 2026-10). It caps what Modal may charge the card in a month once the free credit is used
    up. On a new Starter account it was $5 on the card beyond the $30 credit; it can be raised up to a maximum
    the page shows. Explain it before asking (`onboard` step 5e); the human sets it, at the lowest value the page
    accepts unless they want more.
 4. **Key:** Settings → API Tokens → New token (page name to verify live). When driving the browser, stop here:
    the human presses New token and copies it. You add these lines to the project's `.env` with empty
-   values (`onboard` step 2), and the human pastes the values:
+   values (`onboard` step 5f), and the human pastes the values:
 
    ```
    MODAL_TOKEN_ID=ak-...
@@ -53,7 +53,7 @@ start, Preemption) · Cost model · Clean up · Gotchas
 ## Connection check
 
 The quick start's smoke on an L4, with a fresh run id `smoke-modal-<YYYYMMDD>` (a finished id resumes straight to
-`done` and tests nothing). Write the app (Launch) first, then run this from the project root as one shell call:
+`done` and tests nothing). Copy the app (Launch) first, then run this from the project root as one shell call:
 
 ```bash
 FREELAB_EXP="${CLAUDE_PLUGIN_ROOT}/examples/banking77-laya" FREELAB_RUNLIB="${CLAUDE_PLUGIN_ROOT}/scripts/runlib.py" \
@@ -65,56 +65,16 @@ and `test` accuracy at step 0 and step 50.
 
 ## Launch
 
-Write this once to `lab/backends/modal_app.py`, verbatim:
+Copy the app once into the lab (it has nothing to fill in: it reads the experiment directory and runlib from
+`FREELAB_EXP` and `FREELAB_RUNLIB` at launch):
 
-```python
-"""freelab Modal app, written from skills/compute/references/modal.md: runs EXP/train.py on a GPU, detached,
-with its outputs on the private Volume freelab-runs (committed every minute, so they can be watched)."""
-import os, shlex, subprocess, sys
-import modal
-
-EXP, RUNLIB = os.environ.get("FREELAB_EXP", ""), os.environ.get("FREELAB_RUNLIB", "")
-image = modal.Image.debian_slim(python_version="3.12")
-if EXP and modal.is_local():  # built on the laptop only; the container resolves the function without it
-    image = (image.pip_install_from_requirements(f"{EXP}/requirements.txt")
-             .add_local_dir(EXP, "/exp", ignore=["**/__pycache__", "**/lab", "**/.venv", "**/.env*", "**/.git", "runlib.py"])
-             .add_local_file(RUNLIB, "/exp/runlib.py"))
-app = modal.App("freelab")
-vol = modal.Volume.from_name("freelab-runs", create_if_missing=True)
-
-
-@app.function(image=image, volumes={"/runs": vol}, timeout=30 * 60)
-def run(run_id: str, minutes: float, args: list[str]) -> int:
-    sys.path.insert(0, "/exp")
-    from runlib import has_checkpoint
-    cmd = ["python", "-u", "/exp/train.py", "--out", f"/runs/{run_id}", "--max-minutes", f"{minutes:g}", *args]
-    if has_checkpoint(f"/runs/{run_id}/ckpt"):  # a restart after preemption, or a moved-in checkpoint
-        cmd.append("--resume")
-    proc = subprocess.Popen(cmd, cwd="/exp")
-    try:
-        while True:
-            try:
-                return proc.wait(timeout=60)
-            except subprocess.TimeoutExpired:
-                try:
-                    vol.commit()
-                except Exception as e:  # a missed commit must not end the run
-                    print(f"freelab: volume commit failed ({e})", flush=True)
-    finally:
-        if proc.poll() is None:  # preempted or stopped: let runlib checkpoint first
-            proc.terminate()
-            try:
-                proc.wait(timeout=20)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-        vol.commit()
-
-
-@app.local_entrypoint()
-def main(run_id: str, gpu: str = "T4", minutes: float = 30, args: str = ""):
-    call = run.with_options(gpu=gpu, timeout=int((minutes + 10) * 60)).spawn(run_id, minutes, shlex.split(args))
-    print(f"started {run_id} on a {gpu}, up to {minutes:g} min; function call {call.object_id}")
+```bash
+mkdir -p lab/backends && cp "${CLAUDE_PLUGIN_ROOT}/scripts/backends/templates/modal_app.py" lab/backends/modal_app.py
 ```
+
+It builds an image from EXP's `requirements.txt` with EXP (without `lab`, `.venv`, `.git`, `.env*`) and
+freelab's `runlib.py`, runs `train.py` detached on the GPU you name, commits the outputs to the private Volume
+`freelab-runs` every minute, and on a stop gives the run 20 s to checkpoint.
 
 Launch from the project root, as one shell call, once this launch's estimate is logged (`compute` §6). EXP is
 the experiment directory (the quick start runs in place from `${CLAUDE_PLUGIN_ROOT}/examples/banking77-laya`, as
@@ -136,13 +96,12 @@ FREELAB_EXP="$PWD/EXP" FREELAB_RUNLIB="${CLAUDE_PLUGIN_ROOT}/scripts/runlib.py" 
 
 ## Watch, fetch, stop
 
-- **Watch** with the poll, started with Bash `run_in_background` right after the launch:
+- **Watch** with the poll (`status` §5):
   `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/poll.py modal ID --expected-minutes M --link https://modal.com/apps/...`.
-  Each check copies `status.txt`, `metrics.jsonl` and `summary.json` from the Volume into `lab/runs/ID/`
-  (`modal volume get --force freelab-runs ID/<file>`), updates the status page, and the poll exits when
-  `status.txt` reads `done`, `stopped (...)` or `failed: ...`. So when it exits 0, the small files are fetched.
-  Always pass the app's link: the poll reads the app id (`ap-...`) from it and, if the app has stopped without
-  writing `status.txt` (a container that died), ends the run as failed instead of waiting for `--max-hours`.
+  Each check copies `status.txt`, `metrics.jsonl` and `summary.json` from the Volume into `lab/runs/ID/`. Exit 0
+  means they are fetched; exit 1 with "could not be fetched" means fetch them by hand (below). Always pass the
+  app's link: the poll reads the app id (`ap-...`) from it and, if the app has stopped without writing
+  `status.txt` (a container that died), ends the run as failed instead of waiting for `--max-hours`.
 - One look by hand: `${CLAUDE_PLUGIN_ROOT}/scripts/withenv modal volume get freelab-runs ID/status.txt -`.
 - Still running: `${CLAUDE_PLUGIN_ROOT}/scripts/withenv modal app list` (app `freelab`, note its APP_ID); logs:
   `${CLAUDE_PLUGIN_ROOT}/scripts/withenv modal app logs APP_ID`.
@@ -165,8 +124,9 @@ FREELAB_EXP="$PWD/EXP" FREELAB_RUNLIB="${CLAUDE_PLUGIN_ROOT}/scripts/runlib.py" 
   (once a run finishes, runlib keeps only its final checkpoint: about 2.1 GB for the quick start's full run).
 - **Warm start** (a Train longer round, `plan` §1), a new run id NEW from the finished run OLD: OLD's final checkpoint
   is still on the Volume, so nothing is uploaded. Launch NEW as usual with
-  `--args="--init-from /runs/OLD/ckpt/step-N --epochs 1 --lr-scale 0.5"` (N: OLD's last step, 8 digits; check it
-  with `${CLAUDE_PLUGIN_ROOT}/scripts/withenv modal volume ls freelab-runs OLD/ckpt`).
+  `--args="--init-from /runs/OLD/ckpt/step-N --epochs 1 --lr-scale 0.5 --skip-test"` (N: OLD's last step, 8
+  digits; check it with `${CLAUDE_PLUGIN_ROOT}/scripts/withenv modal volume ls freelab-runs OLD/ckpt`). The
+  chosen round's scoring run (`NEW-test`) uses the same `--args` without `--skip-test`.
 - **Preemption:** Modal restarts a preempted function on the same input; the app resumes from the newest committed
   checkpoint, so only the work since then is lost. After a timeout (`stopped (deadline)`), launch again with the
   same `--run-id`.
