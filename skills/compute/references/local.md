@@ -35,8 +35,9 @@ uv run --with-requirements ${CLAUDE_PLUGIN_ROOT}/examples/banking77-laya/require
 - `--when night` waits for the night window (and waits for the machine to be idle for `idle_minutes`, default 15, when `idle_check` is set; macOS only),
   runs under the night allowance, and sets `--max-minutes` to end 10 minutes before the window closes (a
   smaller `--max-minutes` in ARGS is kept). With `--nights N` a run that hits the window's end resumes on the
-  next night, up to N nights: the launcher sleeps in between (the poll shows the run as waiting and keeps
-  watching), and a second launch of the same run id is refused while it lives.
+  next night, up to N nights: the launcher sleeps in between (the poll shows the run as queued, paused until
+  the next window, and keeps watching), and a second launch of the same run id is refused while it lives: never
+  relaunch a paused night run. Without a night window, `--when night` exits 2.
 - On macOS it keeps the machine awake with `caffeinate -i`.
 - One local run at a time: a second launch exits 2 naming the run that holds the lock
   (`local-run.lock` in `$FREELAB_HOME`, default `~/.freelab`). A night run takes the lock only when it starts.
@@ -65,8 +66,8 @@ put big jobs in the night window.
 ## Preemption
 
 None from a provider, but a run can stop:
-- `stopped (deadline)`: the night window or `--max-minutes` ended it. It resumes next night with `--nights`, or
-  when launched again with the same `--run-id` (the launcher adds `--resume` when a complete checkpoint exists).
+- `stopped (deadline)`: the night window or `--max-minutes` ended it. It resumes next night with `--nights` (its
+  launcher is still waiting: leave it), or, once that launcher has exited, when launched again with the same `--run-id` (the launcher adds `--resume` when a complete checkpoint exists).
 - `stopped (allowance)`: the process RSS went over the RAM allowance, or swap grew by over 1 GB. This is the user's
   call: shrink the job, raise the limit (for this run or for good), or use the cloud.
 - The launcher exits 3 without running anything when the night window closes before the machine was idle, or

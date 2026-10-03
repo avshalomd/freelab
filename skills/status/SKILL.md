@@ -26,7 +26,8 @@ EOF
 ```
 
 A poll started with no `status.json` (onboarding's connection check, before any charter) writes a minimal one
-itself; once the charter exists, set its real goal with `status_page.py set --lab lab goal '<JSON>'` (§2).
+itself (target "none set yet"); once the charter exists, set its real goal and numeric target with
+`status_page.py set --lab lab goal '<JSON>'` (§2).
 
 `direction` is `max` or `min`. The ledger holds list prices, free credit included, so `usd_limit` is the
 charter's budget plus the free credit the lab may use; `usd_free` (optional) is the free credit;
@@ -107,9 +108,10 @@ This is the one description of the poll; the other skills and the references poi
 - **Exit codes:** `0` done, and the small files (`status.txt`, `metrics.jsonl`, `summary.json`) are in
   `lab/runs/ID/`; `3` stopped, resumable (`compute` §7); `1` failed, gave up after `--max-hours`, or the provider
   says the run ended but its files could not be fetched (fetch them by hand, the reference's **Watch, fetch,
-  stop**). A local run paused between nights (`--nights N`) shows as waiting, and the poll keeps watching.
-- **A wrong run id:** `--once` records nothing for a run no provider knows; an entry left by a run that never
-  launched goes with `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/status_page.py forget --lab lab RUN_ID`.
+  stop**). A local run paused between nights (`--nights N`) shows as queued ("Paused until the next night window"),
+  and the poll keeps watching: never relaunch it.
+- **A wrong run id:** `--once` on a run no provider knows exits 1 and records nothing (check the id, or wait a
+  minute after the launch); an entry left by a run that never launched goes with `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/status_page.py forget --lab lab RUN_ID`.
 - **When it exits:** update `best`, the spend and the stages (§2), re-publish if published, then for a planned
   run fetch what else is needed (`compute`) and go straight on to `report`. A research loop does this after every
   experiment (`research` §3).

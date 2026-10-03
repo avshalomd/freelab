@@ -108,7 +108,8 @@ the last one), and the actual cost once known:
 ## 7. Recovery
 
 - **`stopped (...)`** in `status.txt` (poll exit 3; local: exit 3): resumable. On Modal and this machine, launch
-  again with the same run id; on Kaggle and Lightning AI, relaunch through the reference file's **Move in / out**
+  again with the same run id (not a local night run whose launcher still waits for the next window: the poll
+  shows it as queued); on Kaggle and Lightning AI, relaunch through the reference file's **Move in / out**
   (a new job with `--resume`). Each relaunch logs its own estimate first. Preemption notes are in each
   reference's **Move in / out**. `stopped (allowance)` (local) goes to the user (section 2), not straight back
   into a relaunch.

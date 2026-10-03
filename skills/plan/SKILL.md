@@ -111,6 +111,8 @@ its own: the quick start's plan has one stage.
   an `ask`, settle it with the user before the plan is final.
 - **Estimate:** hours × the backend's rate from its reference's **Cost model**. This machine costs USD 0.
 
+If `lab/status.json` exists already (the connection check's poll starts a minimal one), set its `goal` from the
+charter with `status_page.py set --lab lab goal '{"text": ..., "metric": ..., "target": ..., "direction": ...}'`.
 Write the stages to `lab/status.json` `stages` as well, in the same order, each `{"name": "<stage name>",
 "state": "planned", "detail": "<one line: goal or placement>"}`, with `status_page.py set --lab lab stages
 '<the list as JSON>'` (the `status` skill, §2). When the plan changes, change them too. For a task that is not a
